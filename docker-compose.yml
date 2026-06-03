@@ -1,0 +1,81 @@
+name: mundia
+
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: mundia-frontend
+    ports:
+      - "${FRONTEND_PORT:-5173}:5173"
+    environment:
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8080/api}
+      VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID:-}
+      CHOKIDAR_USEPOLLING: "true"
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+    depends_on:
+      backend:
+        condition: service_started
+
+  backend:
+    image: maven:3.9-eclipse-temurin-17
+    container_name: mundia-backend
+    working_dir: /app
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-local}
+      SPRING_DATASOURCE_URL: jdbc:mariadb://database:3306/${MARIADB_DATABASE:-mundia}
+      SPRING_DATASOURCE_USERNAME: ${MARIADB_USER:-mundia}
+      SPRING_DATASOURCE_PASSWORD: ${MARIADB_PASSWORD:-mundia_password}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      JWT_SECRET: ${JWT_SECRET:-mundia-dev-jwt-secret-please-change-me-ok}
+      API_FOOTBALL_KEY: ${API_FOOTBALL_KEY:-}
+      API_FOOTBALL_MODE: ${API_FOOTBALL_MODE:-direct}
+      API_FOOTBALL_SEASON: ${API_FOOTBALL_SEASON:-2026}
+      API_FOOTBALL_LEAGUE: ${API_FOOTBALL_LEAGUE:-1}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    volumes:
+      - ./backend:/app
+      - backend_m2:/root/.m2
+    depends_on:
+      database:
+        condition: service_healthy
+    command: >
+      sh -c "
+        if [ -f ./mvnw ]; then
+          chmod +x ./mvnw && ./mvnw spring-boot:run;
+        elif [ -f ./pom.xml ]; then
+          mvn spring-boot:run;
+        else
+          echo 'Backend Spring Boot pendiente de scaffold. El contenedor queda vivo para mantener la red Docker.';
+          tail -f /dev/null;
+        fi
+      "
+
+  database:
+    image: mariadb:11.4
+    container_name: mundia-database
+    ports:
+      - "${MARIADB_PORT:-3307}:3306"
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:-root_password}
+      MARIADB_DATABASE: ${MARIADB_DATABASE:-mundia}
+      MARIADB_USER: ${MARIADB_USER:-mundia}
+      MARIADB_PASSWORD: ${MARIADB_PASSWORD:-mundia_password}
+    volumes:
+      - mariadb_data:/var/lib/mysql
+      - ./database/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+volumes:
+  frontend_node_modules:
+  backend_m2:
+  mariadb_data:
