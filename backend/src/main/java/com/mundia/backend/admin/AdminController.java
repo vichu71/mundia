@@ -3,6 +3,7 @@ package com.mundia.backend.admin;
 import com.mundia.backend.scoring.ScoringService;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -16,13 +17,74 @@ public class AdminController {
 
     record SetResultRequest(int homeGoals, int awayGoals) {}
     record AddMemberRequest(long poolId, String displayName, String email) {}
+    record MemberDto(long memberId, long userId, String displayName, String email,
+                     String role, String paymentStatus, String joinedAt) {}
 
     private final JdbcTemplate jdbc;
     private final ScoringService scoringService;
+    private final PasswordEncoder passwordEncoder;
 
-    public AdminController(JdbcTemplate jdbc, ScoringService scoringService) {
+    public AdminController(JdbcTemplate jdbc, ScoringService scoringService, PasswordEncoder passwordEncoder) {
         this.jdbc = jdbc;
         this.scoringService = scoringService;
+        this.passwordEncoder = passwordEncoder;
+    }
+
+    // ─── Listar miembros ──────────────────────────────────────────────────────
+
+    @GetMapping("/members/{poolId}")
+    public List<MemberDto> listMembers(@PathVariable long poolId) {
+        return jdbc.query("""
+                SELECT
+                  pm.id            member_id,
+                  u.id             user_id,
+                  u.display_name,
+                  u.email,
+                  pm.role,
+                  pm.joined_at,
+                  COALESCE(pay.status, 'NONE') payment_status
+                FROM pool_members pm
+                JOIN users u ON u.id = pm.user_id
+                LEFT JOIN payments pay ON pay.pool_member_id = pm.id
+                WHERE pm.pool_id = ?
+                ORDER BY pm.role DESC, u.display_name
+                """,
+                (rs, i) -> new MemberDto(
+                        rs.getLong("member_id"),
+                        rs.getLong("user_id"),
+                        rs.getString("display_name"),
+                        rs.getString("email"),
+                        rs.getString("role"),
+                        rs.getString("payment_status"),
+                        rs.getString("joined_at")),
+                poolId);
+    }
+
+    // ─── Eliminar miembro de la porra ─────────────────────────────────────────
+
+    @DeleteMapping("/members/{memberId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void removeMember(@PathVariable long memberId) {
+        // Cascade: score_breakdowns, prize_projections, match_predictions,
+        //          bracket_predictions, prediction_sets, payments, pool_member
+        jdbc.update("DELETE FROM score_breakdowns WHERE pool_member_id = ?", memberId);
+        jdbc.update("DELETE FROM prize_projections WHERE pool_member_id = ?", memberId);
+        jdbc.update("""
+                DELETE mp FROM match_predictions mp
+                JOIN prediction_sets ps ON ps.id = mp.prediction_set_id
+                WHERE ps.pool_member_id = ?
+                """, memberId);
+        jdbc.update("""
+                DELETE bp FROM bracket_predictions bp
+                JOIN prediction_sets ps ON ps.id = bp.prediction_set_id
+                WHERE ps.pool_member_id = ?
+                """, memberId);
+        jdbc.update("DELETE FROM prediction_sets WHERE pool_member_id = ?", memberId);
+        jdbc.update("DELETE FROM payments WHERE pool_member_id = ?", memberId);
+        int rows = jdbc.update("DELETE FROM pool_members WHERE id = ?", memberId);
+        if (rows == 0) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Member not found: " + memberId);
+        }
     }
 
     // ─── Recalcular scoring manualmente ──────────────────────────────────────
@@ -75,18 +137,26 @@ public class AdminController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "displayName and email required");
         }
 
-        // Get or create user
+        // Obtener invite code de la porra para usarlo como contraseña inicial
+        String inviteCode = jdbc.queryForObject(
+                "SELECT invite_code FROM pools WHERE id = ?", String.class, req.poolId());
+        if (inviteCode == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Pool not found: " + req.poolId());
+        }
+
+        // Get or create user — contraseña inicial = invite code
         List<Long> userIds = jdbc.query(
                 "SELECT id FROM users WHERE email = ?",
                 (rs, i) -> rs.getLong("id"),
-                req.email());
+                req.email().trim().toLowerCase());
 
         long userId;
         if (!userIds.isEmpty()) {
             userId = userIds.get(0);
         } else {
-            jdbc.update("INSERT INTO users (email, display_name) VALUES (?, ?)",
-                    req.email(), req.displayName());
+            String passwordHash = passwordEncoder.encode(inviteCode);
+            jdbc.update("INSERT INTO users (email, display_name, password_hash) VALUES (?, ?, ?)",
+                    req.email().trim().toLowerCase(), req.displayName().trim(), passwordHash);
             Long id = jdbc.queryForObject("SELECT LAST_INSERT_ID()", Long.class);
             if (id == null) throw new IllegalStateException("Failed to create user");
             userId = id;

@@ -128,6 +128,67 @@ async function signOut() {
   setTimeout(initGoogleAuth, 200)
 }
 
+// ─── Email auth ───────────────────────────────────────────────────────────────
+type AuthMode = 'google' | 'login' | 'register'
+const authMode     = ref<AuthMode>('google')
+const emailForm    = ref({
+  email: '', password: '', displayName: '', inviteCode: '',
+  loading: false, error: '',
+})
+
+async function emailLogin() {
+  emailForm.value.loading = true
+  emailForm.value.error = ''
+  try {
+    const res = await fetch(`${API_BASE_URL}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: emailForm.value.email, password: emailForm.value.password }),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      emailForm.value.error = err.message ?? 'Email o contraseña incorrectos'
+      return
+    }
+    const data = await res.json()
+    authToken.value = data.token
+    localStorage.setItem(JWT_KEY, data.token)
+    await loadMe()
+    if (userPools.value.length > 0) { await loadRemoteState(); animateHero() }
+  } finally {
+    emailForm.value.loading = false
+  }
+}
+
+async function emailRegister() {
+  emailForm.value.loading = true
+  emailForm.value.error = ''
+  try {
+    const res = await fetch(`${API_BASE_URL}/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: emailForm.value.email,
+        password: emailForm.value.password,
+        displayName: emailForm.value.displayName,
+        inviteCode: emailForm.value.inviteCode || null,
+      }),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      emailForm.value.error = err.message ?? 'Error al registrarse'
+      return
+    }
+    const data = await res.json()
+    authToken.value = data.token
+    localStorage.setItem(JWT_KEY, data.token)
+    await loadMe()
+    if (userPools.value.length > 0) { await loadRemoteState(); animateHero() }
+  } finally {
+    emailForm.value.loading = false
+  }
+}
+
 // ─── Crear porra ──────────────────────────────────────────────────────────────
 const createPoolForm = ref({ name: '', description: '', entryFee: 10, loading: false, error: '' })
 
@@ -207,8 +268,26 @@ const prizeRows = ref<PrizeRow[]>([
 const pendingPayments = ref<PendingPayment[]>([])
 
 // ─── Admin state ───────────────────────────────────────────────────────────
+type Member = { memberId: number; userId: number; displayName: string; email: string; role: string; paymentStatus: string }
 const inviteModal   = ref({ open: false, name: '', email: '', loading: false, error: '' })
 const resultForm    = ref({ matchId: null as number | null, homeGoals: 0, awayGoals: 0, loading: false })
+const memberList    = ref<Member[]>([])
+const membersLoaded = ref(false)
+
+async function loadMembers() {
+  if (!activePoolId.value) return
+  const res = await fetchWithAuth(`${API_BASE_URL}/admin/members/${activePoolId.value}`)
+  if (res.ok) {
+    memberList.value = await res.json()
+    membersLoaded.value = true
+  }
+}
+
+async function removeMember(memberId: number, name: string) {
+  if (!confirm(`¿Eliminar a ${name} de la porra? Se borrarán sus predicciones y pagos.`)) return
+  await fetchWithAuth(`${API_BASE_URL}/admin/members/${memberId}`, { method: 'DELETE' })
+  await Promise.all([loadMembers(), loadDashboard()])
+}
 
 async function confirmPayment(paymentId: number) {
   await fetchWithAuth(`${API_BASE_URL}/admin/payments/${paymentId}/confirm`, { method: 'POST' })
@@ -622,6 +701,7 @@ onMounted(async () => {
 watch(activeTab, async (tab) => {
   animateTabIn()
   if (tab === 'home') await loadDashboard()
+  if (tab === 'admin') await loadMembers()
 })
 
 watch(activePool, () => animatePoolSwitch())
@@ -631,11 +711,48 @@ watch(activePool, () => animatePoolSwitch())
 
   <!-- ═══════════════ LOGIN ═══════════════ -->
   <div v-if="!authToken" class="login-screen">
-    <div class="login-card">
+    <div class="login-card" style="max-width:400px">
       <span class="login-ball">⚽</span>
       <h1>Mundia</h1>
       <p class="login-sub">Porra familiar · Mundial 2026</p>
-      <div id="g_signin_btn" class="login-google-btn"></div>
+
+      <!-- Tabs -->
+      <div class="auth-tabs">
+        <button :class="['auth-tab', { active: authMode === 'google' }]" @click="authMode = 'google'">Google</button>
+        <button :class="['auth-tab', { active: authMode === 'login' }]" @click="authMode = 'login'">Email</button>
+        <button :class="['auth-tab', { active: authMode === 'register' }]" @click="authMode = 'register'">Registrarse</button>
+      </div>
+
+      <!-- Google -->
+      <div v-if="authMode === 'google'" id="g_signin_btn" class="login-google-btn"></div>
+
+      <!-- Email login -->
+      <div v-else-if="authMode === 'login'" class="invite-form" style="width:100%;text-align:left">
+        <label class="invite-label">Email</label>
+        <input v-model="emailForm.email" class="invite-input" type="email" placeholder="tu@email.com" autocomplete="email" @keyup.enter="emailLogin" />
+        <label class="invite-label">Contraseña</label>
+        <input v-model="emailForm.password" class="invite-input" type="password" placeholder="••••••••" autocomplete="current-password" @keyup.enter="emailLogin" />
+        <p v-if="emailForm.error" class="invite-error">{{ emailForm.error }}</p>
+        <button class="btn btn--primary" style="width:100%;margin-top:4px" :disabled="emailForm.loading" @click="emailLogin">
+          {{ emailForm.loading ? 'Entrando…' : 'Entrar' }}
+        </button>
+      </div>
+
+      <!-- Register -->
+      <div v-else-if="authMode === 'register'" class="invite-form" style="width:100%;text-align:left">
+        <label class="invite-label">Nombre</label>
+        <input v-model="emailForm.displayName" class="invite-input" type="text" placeholder="Tu nombre" autocomplete="name" />
+        <label class="invite-label">Email</label>
+        <input v-model="emailForm.email" class="invite-input" type="email" placeholder="tu@email.com" autocomplete="email" />
+        <label class="invite-label">Contraseña <span style="color:var(--muted);font-weight:400">(mín. 6 caracteres)</span></label>
+        <input v-model="emailForm.password" class="invite-input" type="password" placeholder="••••••••" autocomplete="new-password" />
+        <label class="invite-label">Código de porra <span style="color:var(--muted);font-weight:400">(opcional)</span></label>
+        <input v-model="emailForm.inviteCode" class="invite-input" type="text" placeholder="MUNDIA-26" style="text-transform:uppercase" />
+        <p v-if="emailForm.error" class="invite-error">{{ emailForm.error }}</p>
+        <button class="btn btn--primary" style="width:100%;margin-top:4px" :disabled="emailForm.loading" @click="emailRegister">
+          {{ emailForm.loading ? 'Creando cuenta…' : 'Crear cuenta' }}
+        </button>
+      </div>
     </div>
   </div>
 
@@ -1096,16 +1213,43 @@ watch(activePool, () => animatePoolSwitch())
         <div class="admin-grid">
 
           <!-- Participantes -->
-          <article class="panel">
-            <div class="panel__header"><Users :size="18" /><h2>Participantes</h2></div>
-            <div class="admin-stats">
-              <div class="admin-stat"><span>Totales</span><strong>{{ selectedPool.members }}</strong></div>
-              <div class="admin-stat admin-stat--green"><span>Pagados</span><strong>{{ selectedPool.paid }}</strong></div>
-              <div class="admin-stat admin-stat--warn"><span>Pendientes</span><strong>{{ selectedPool.members - selectedPool.paid }}</strong></div>
+          <article class="panel admin-wide-panel">
+            <div class="panel__header">
+              <Users :size="18" />
+              <h2>Participantes</h2>
+              <div class="admin-stats" style="margin-left:auto;margin-bottom:0;gap:8px">
+                <div class="admin-stat"><span>Total</span><strong>{{ memberList.length }}</strong></div>
+                <div class="admin-stat admin-stat--green"><span>Pagados</span><strong>{{ memberList.filter(m => m.paymentStatus === 'CONFIRMED').length }}</strong></div>
+                <div class="admin-stat admin-stat--warn"><span>Pendientes</span><strong>{{ memberList.filter(m => m.paymentStatus === 'PENDING').length }}</strong></div>
+              </div>
+              <button class="btn btn--primary btn--sm" type="button" @click="inviteModal.open = true">
+                <Users :size="13" /> Añadir
+              </button>
             </div>
-            <button class="btn btn--primary" style="width:100%;margin-top:14px" type="button" @click="inviteModal.open = true">
-              <Users :size="14" /> Añadir participante
-            </button>
+
+            <div class="members-list">
+              <div v-if="!membersLoaded" class="muted" style="padding:8px 0;font-size:0.8rem">Cargando…</div>
+              <div v-else-if="memberList.length === 0" class="muted" style="padding:8px 0;font-size:0.8rem">Sin participantes todavía</div>
+              <div v-for="m in memberList" :key="m.memberId" class="member-row">
+                <div class="ranking-avatar">{{ m.displayName.slice(0,2).toUpperCase() }}</div>
+                <div class="member-info">
+                  <strong>{{ m.displayName }}</strong>
+                  <small>{{ m.email }}</small>
+                </div>
+                <span :class="['badge', m.role === 'ADMIN' ? 'badge--active' : 'badge--draft']">{{ m.role }}</span>
+                <span :class="['badge', m.paymentStatus === 'CONFIRMED' ? 'badge--open' : m.paymentStatus === 'PENDING' ? 'badge--warning' : 'badge--closed']">
+                  {{ m.paymentStatus === 'CONFIRMED' ? 'Pagado' : m.paymentStatus === 'PENDING' ? 'Pendiente' : 'Sin pago' }}
+                </span>
+                <button
+                  v-if="m.role !== 'ADMIN'"
+                  class="btn btn--sm btn--ghost"
+                  style="color:var(--coral);border:1px solid rgba(251,113,133,0.25);background:var(--coral-dim)"
+                  type="button"
+                  :title="`Eliminar a ${m.displayName}`"
+                  @click="removeMember(m.memberId, m.displayName)"
+                >✕</button>
+              </div>
+            </div>
           </article>
 
           <!-- Confirmar pagos -->
