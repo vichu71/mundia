@@ -57,6 +57,9 @@ public class PoolController {
                   (?, 'CHAMPION',         0.00,  5.00, TRUE)
                 """, poolId, poolId, poolId, poolId, poolId, poolId);
 
+        // Note: no welcome email here — the user already received it on
+        // registration / first Google login. Sending again would duplicate it.
+
         return new CreatePoolResponse(poolId, req.name(), inviteCode);
     }
 

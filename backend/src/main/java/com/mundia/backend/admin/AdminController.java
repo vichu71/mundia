@@ -1,5 +1,6 @@
 package com.mundia.backend.admin;
 
+import com.mundia.backend.notification.NotificationService;
 import com.mundia.backend.scoring.ScoringService;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -23,11 +24,14 @@ public class AdminController {
     private final JdbcTemplate jdbc;
     private final ScoringService scoringService;
     private final PasswordEncoder passwordEncoder;
+    private final NotificationService notifications;
 
-    public AdminController(JdbcTemplate jdbc, ScoringService scoringService, PasswordEncoder passwordEncoder) {
+    public AdminController(JdbcTemplate jdbc, ScoringService scoringService,
+                           PasswordEncoder passwordEncoder, NotificationService notifications) {
         this.jdbc = jdbc;
         this.scoringService = scoringService;
         this.passwordEncoder = passwordEncoder;
+        this.notifications = notifications;
     }
 
     // ─── Listar miembros ──────────────────────────────────────────────────────
@@ -95,6 +99,26 @@ public class AdminController {
         return Map.of("processed", processed);
     }
 
+    // ─── Eliminar porra (soft-delete) ─────────────────────────────────────────
+
+    @DeleteMapping("/pools/{poolId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void deletePool(@PathVariable long poolId,
+                           org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken auth) {
+        long userId = Long.parseLong(auth.getToken().getSubject());
+        String role = jdbc.query(
+                "SELECT role FROM pool_members WHERE pool_id = ? AND user_id = ?",
+                (rs, i) -> rs.getString("role"), poolId, userId)
+                .stream().findFirst().orElse("");
+        if (!"ADMIN".equals(role)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Solo el admin puede eliminar la porra");
+        }
+        int rows = jdbc.update("UPDATE pools SET status = 'DELETED' WHERE id = ?", poolId);
+        if (rows == 0) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Porra no encontrada: " + poolId);
+        }
+    }
+
     // ─── Confirmar pago ───────────────────────────────────────────────────────
 
     @PostMapping("/payments/{id}/confirm")
@@ -151,8 +175,10 @@ public class AdminController {
                 req.email().trim().toLowerCase());
 
         long userId;
+        boolean isNewUser;
         if (!userIds.isEmpty()) {
             userId = userIds.get(0);
+            isNewUser = false;
         } else {
             String passwordHash = passwordEncoder.encode(inviteCode);
             jdbc.update("INSERT INTO users (email, display_name, password_hash) VALUES (?, ?, ?)",
@@ -160,6 +186,7 @@ public class AdminController {
             Long id = jdbc.queryForObject("SELECT LAST_INSERT_ID()", Long.class);
             if (id == null) throw new IllegalStateException("Failed to create user");
             userId = id;
+            isNewUser = true;
         }
 
         long poolId = req.poolId();
@@ -188,5 +215,14 @@ public class AdminController {
                 INSERT INTO payments (pool_member_id, amount_cents, method, status, notes)
                 VALUES (?, ?, 'BIZUM', 'PENDING', 'Pendiente de confirmar por admin')
                 """, memberId, entryFee);
+
+        // Notify the new participant by email
+        String poolName = jdbc.queryForObject(
+                "SELECT name FROM pools WHERE id = ?", String.class, poolId);
+        notifications.sendPoolInvite(
+                req.email().trim().toLowerCase(),
+                req.displayName().trim(),
+                poolName != null ? poolName : "Mundia",
+                isNewUser ? inviteCode : null);   // include password only for new users
     }
 }

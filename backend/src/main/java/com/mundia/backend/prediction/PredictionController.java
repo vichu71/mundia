@@ -23,11 +23,33 @@ public class PredictionController {
         this.jdbc = jdbc;
     }
 
-    /** POST /api/predictions/match — save or update a single match prediction */
+    /** POST /api/predictions/match — save or update a single LIVE match prediction */
     @PostMapping("/match")
     public void saveMatch(JwtAuthenticationToken auth, @RequestBody SavePredictionRequest req) {
         long userId = Long.parseLong(auth.getToken().getSubject());
         predictionService.saveForUser(userId, req.poolId(), req.matchId(), req.homeGoals(), req.awayGoals());
+    }
+
+    /** POST /api/predictions/initial — save or update a single INITIAL match prediction */
+    @PostMapping("/initial")
+    public void saveInitial(JwtAuthenticationToken auth, @RequestBody SavePredictionRequest req) {
+        long userId = Long.parseLong(auth.getToken().getSubject());
+        predictionService.saveInitialForUser(userId, req.poolId(), req.matchId(), req.homeGoals(), req.awayGoals());
+    }
+
+    /** GET /api/predictions/initial/status/{poolId} — has the user submitted initial bet? */
+    @GetMapping("/initial/status/{poolId}")
+    public java.util.Map<String, Object> initialStatus(JwtAuthenticationToken auth, @PathVariable long poolId) {
+        long userId = Long.parseLong(auth.getToken().getSubject());
+        boolean has = predictionService.hasInitialBet(userId, poolId);
+        // count how many matches have initial prediction
+        long memberId = predictionService.requirePoolMember(userId, poolId);
+        Integer count = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM match_predictions mp
+                JOIN prediction_sets ps ON ps.id = mp.prediction_set_id
+                WHERE ps.pool_member_id = ? AND ps.type = 'INITIAL'
+                """, Integer.class, memberId);
+        return java.util.Map.of("hasInitialBet", has, "predictedMatches", count != null ? count : 0);
     }
 
     /**
@@ -67,6 +89,7 @@ public class PredictionController {
                 result.awayGoals(),
                 result.homeGoals() + " - " + result.awayGoals(),
                 result.source(),
+                result.reasoning(),
                 null
         );
     }
@@ -106,7 +129,7 @@ public class PredictionController {
                     m.id(), m.home(), m.away(),
                     r.homeGoals(), r.awayGoals(),
                     r.homeGoals() + " - " + r.awayGoals(),
-                    "random", null);
+                    "random", null, null);
         }).toList();
     }
 
@@ -122,10 +145,11 @@ public class PredictionController {
             Integer awayGoals,
             String prediction,
             String source,
+            String reasoning,
             String error
     ) {
         static AiPredictionResponse error(String msg) {
-            return new AiPredictionResponse(null, null, null, null, null, null, null, msg);
+            return new AiPredictionResponse(null, null, null, null, null, null, null, null, msg);
         }
     }
 }

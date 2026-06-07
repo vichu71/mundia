@@ -10,7 +10,6 @@ import {
   CircleAlert,
   Crown,
   Home,
-  Medal,
   Pencil,
   RefreshCw,
   Settings,
@@ -27,14 +26,16 @@ import {
 // ──────────────────────────────────────────
 //  TYPES
 // ──────────────────────────────────────────
-type TabId = 'home' | 'matches' | 'ranking' | 'prizes' | 'admin'
+type TabId = 'home' | 'matches' | 'bracket' | 'ranking' | 'prizes' | 'admin'
 
 type Pool = { id: number; name: string; code: string; status: string; statusType: string; userRole: string; members: number; paid: number; pot: number }
-type Match = { id: number; home: string; away: string; homeFl: string; awayFl: string; pred: string; real: string; points: number | null; status: string; statusType: string; note: string; kickoff: string | null; source: string | null }
+type Match = { id: number; home: string; away: string; homeFl: string; awayFl: string; pred: string; real: string; points: number | null; status: string; statusType: string; note: string; kickoff: string | null; source: string | null; roundName: string | null; stage: string | null }
 type RankingRow = { pos: number; name: string; avatar: string; points: number; exact: number; winners: number; prize: number; delta: string; alive: boolean }
 type InitialRankingRow = { pos: number; name: string; points: number; exact: number; winners: number; bonus: string }
 type PrizeRow = { label: string; amount: number; state: string; stateType: string; contenders: number; pct: number }
 type BracketMatch = { home: string; homeFl: string; away: string; awayFl: string; pred: string; real: string; winner: string; done: boolean }
+type TeamStanding = { name: string; flag: string; played: number; won: number; drawn: number; lost: number; gf: number; ga: number; points: number }
+type GroupStanding = { roundName: string; teams: TeamStanding[] }
 type BracketRound = { name: string; matches: BracketMatch[] }
 type Recommendation = { type: 'danger' | 'success' | 'info'; text: string }
 type PendingPayment = { id: number; name: string }
@@ -93,9 +94,13 @@ async function handleGoogleCredential(response: { credential: string }) {
   const res = await fetch(`${API_BASE_URL}/auth/google`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ credential: response.credential }),
+    body: JSON.stringify({ credential: response.credential, accessCode: emailForm.value.accessCode || null }),
   })
-  if (!res.ok) { console.error('Auth failed', await res.text()); return }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    emailForm.value.error = err.message ?? 'Error al entrar con Google'
+    return
+  }
   const data = await res.json()
   authToken.value = data.token
   localStorage.setItem(JWT_KEY, data.token)
@@ -132,7 +137,7 @@ async function signOut() {
 type AuthMode = 'google' | 'login' | 'register'
 const authMode     = ref<AuthMode>('google')
 const emailForm    = ref({
-  email: '', password: '', displayName: '', inviteCode: '',
+  email: '', password: '', displayName: '', inviteCode: '', accessCode: '',
   loading: false, error: '',
 })
 
@@ -143,7 +148,7 @@ async function emailLogin() {
     const res = await fetch(`${API_BASE_URL}/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: emailForm.value.email, password: emailForm.value.password }),
+      body: JSON.stringify({ email: emailForm.value.email, password: emailForm.value.password, accessCode: emailForm.value.accessCode || null }),
     })
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
@@ -172,6 +177,7 @@ async function emailRegister() {
         password: emailForm.value.password,
         displayName: emailForm.value.displayName,
         inviteCode: emailForm.value.inviteCode || null,
+        accessCode: emailForm.value.accessCode || null,
       }),
     })
     if (!res.ok) {
@@ -221,6 +227,95 @@ async function createPool() {
 // ──────────────────────────────────────────
 const activeTab   = ref<TabId>('home')
 const activePool  = ref<number | null>(null)
+const showHelp    = ref(false)
+
+// ─── Simulator ───────────────────────────────────────────────────────────────
+type SimDayInfo = { day: number; date: string; matches: number; done: boolean }
+type SimStatus  = { simDay: number; currentDate: string | null; totalDays: number; simUsers: number; days: SimDayInfo[] }
+
+const sim = ref<SimStatus | null>(null)
+const simLoading = ref(false)
+const simUserCount = ref(5)
+
+async function loadSimStatus() {
+  if (!activePoolId.value) return
+  const res = await fetchWithAuth(`${API_BASE_URL}/admin/sim/status/${activePoolId.value}`)
+  if (res.ok) sim.value = await res.json()
+}
+
+async function simCreateUsers() {
+  simLoading.value = true
+  try {
+    await fetchWithAuth(`${API_BASE_URL}/admin/sim/users/${activePoolId.value}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ count: simUserCount.value }),
+    })
+    await Promise.all([loadSimStatus(), loadDashboard(), loadMembers()])
+    membersLoaded.value = true
+  } finally { simLoading.value = false }
+}
+
+async function simAdvanceDay() {
+  simLoading.value = true
+  try {
+    await fetchWithAuth(`${API_BASE_URL}/admin/sim/advance/${activePoolId.value}`, { method: 'POST' })
+    await Promise.all([loadSimStatus(), loadDashboard(), loadInitialBetStatus()])
+  } finally { simLoading.value = false }
+}
+
+async function simReset() {
+  if (!confirm('¿Borrar toda la simulación? Se eliminarán usuarios simulados y todos los resultados.')) return
+  simLoading.value = true
+  try {
+    await fetchWithAuth(`${API_BASE_URL}/admin/sim/reset/${activePoolId.value}`, { method: 'DELETE' })
+    await Promise.all([loadSimStatus(), loadDashboard(), loadMembers()])
+    membersLoaded.value = true
+  } finally { simLoading.value = false }
+}
+
+async function simFullTournament() {
+  if (!confirm('¿Simular el torneo completo hasta la Final? Esto avanzará todos los días y generará todas las eliminatorias.')) return
+  simLoading.value = true
+  try {
+    const res = await fetchWithAuth(`${API_BASE_URL}/admin/sim/full/${activePoolId.value}`, { method: 'POST' })
+    if (!res.ok) { alert('Error en simulación completa'); return }
+    await Promise.all([loadSimStatus(), loadDashboard(), loadMembers(), loadInitialBetStatus()])
+    membersLoaded.value = true
+    activeTab.value = 'bracket'
+  } finally { simLoading.value = false }
+}
+
+async function simGenRound32() {
+  simLoading.value = true
+  try {
+    const res = await fetchWithAuth(`${API_BASE_URL}/admin/sim/knockout/round32/${activePoolId.value}`, { method: 'POST' })
+    if (!res.ok) { const e = await res.json().catch(() => ({})); alert(e.detail ?? 'Error generando Round of 32'); return }
+    await Promise.all([loadSimStatus(), loadDashboard()])
+    activeTab.value = 'bracket'
+  } finally { simLoading.value = false }
+}
+
+const KNOCKOUT_ROUNDS = [
+  { current: 'Round of 32',   next: 'Round of 16',   sortOrder: 11, dates: ['2026-07-10 18:00','2026-07-10 21:00','2026-07-11 18:00','2026-07-11 21:00','2026-07-12 18:00','2026-07-12 21:00','2026-07-13 18:00','2026-07-13 21:00'] },
+  { current: 'Round of 16',   next: 'Quarter-finals', sortOrder: 12, dates: ['2026-07-17 18:00','2026-07-17 21:00','2026-07-18 18:00','2026-07-18 21:00'] },
+  { current: 'Quarter-finals',next: 'Semi-finals',    sortOrder: 13, dates: ['2026-07-21 21:00','2026-07-22 21:00'] },
+  { current: 'Semi-finals',   next: 'Final',          sortOrder: 14, dates: ['2026-07-25 21:00'] },
+]
+
+async function simGenNextRound(round: typeof KNOCKOUT_ROUNDS[0]) {
+  simLoading.value = true
+  try {
+    const res = await fetchWithAuth(`${API_BASE_URL}/admin/sim/knockout/next/${activePoolId.value}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ currentRound: round.current, nextRound: round.next, sortOrder: String(round.sortOrder), dates: round.dates.join(',') }),
+    })
+    if (!res.ok) { const e = await res.json().catch(() => ({})); alert(e.detail ?? 'Error generando ronda'); return }
+    await Promise.all([loadSimStatus(), loadDashboard()])
+    activeTab.value = 'bracket'
+  } finally { simLoading.value = false }
+}
 
 // ──────────────────────────────────────────
 //  DATA
@@ -231,14 +326,29 @@ const pools = ref<Pool[]>([])
 
 const EMPTY_POOL: Pool = { id: 0, name: '', code: '', status: '', statusType: '', userRole: '', members: 0, paid: 0, pot: 0 }
 const selectedPool   = computed(() => pools.value.find((p) => p.id === activePool.value) ?? pools.value[0] ?? EMPTY_POOL)
-const groupRounds    = computed(() => bracketRounds.value.filter(r => r.name.startsWith('Group')))
-const knockoutRounds = computed(() => bracketRounds.value.filter(r => !r.name.startsWith('Group')))
+const nextMatch      = computed(() =>
+  matches.value.find(m => m.statusType === 'open' || m.statusType === 'warning') ?? matches.value[0] ?? null
+)
+const myRanking      = computed(() =>
+  ranking.value.find(r => r.name === currentUser.value?.name) ?? ranking.value[0] ?? null
+)
+const pendingCount   = computed(() =>
+  matches.value.filter(m => (m.statusType === 'open' || m.statusType === 'warning') && m.pred === '? - ?').length
+)
+const champion = computed(() => {
+  const final = bracketRounds.value.find(r => r.name === 'Final')?.matches[0]
+  if (!final || !final.done) return null
+  // winner field holds the team name; match its flag from home/away
+  if (final.winner === final.home) return { name: final.home, flag: final.homeFl }
+  if (final.winner === final.away) return { name: final.away, flag: final.awayFl }
+  return { name: final.winner, flag: 'un' }
+})
 
 const matches = ref<Match[]>([
-  { id: 1, home: 'Espana',    away: 'Alemania',  homeFl: 'es',     awayFl: 'de',     pred: '0 - 0', real: 'Pend.', points: null, status: 'Abierto', statusType: 'open', note: 'Partido de prueba. Sin resultado real.', kickoff: null, source: null },
-  { id: 2, home: 'Brasil',    away: 'Portugal',  homeFl: 'br',     awayFl: 'pt',     pred: '0 - 0', real: 'Pend.', points: null, status: 'Abierto', statusType: 'open', note: 'Pendiente de sincronizar con API-Football.', kickoff: null, source: null },
-  { id: 3, home: 'Argentina', away: 'Francia',   homeFl: 'ar',     awayFl: 'fr',     pred: '0 - 0', real: 'Pend.', points: null, status: 'Abierto', statusType: 'open', note: 'Editable mientras no empiece.', kickoff: null, source: null },
-  { id: 4, home: 'Inglaterra',away: 'Italia',    homeFl: 'gb-eng', awayFl: 'it',     pred: '0 - 0', real: 'Pend.', points: null, status: 'Abierto', statusType: 'open', note: 'Sin puntos todavia.', kickoff: null, source: null },
+  { id: 1, home: 'Espana',    away: 'Alemania',  homeFl: 'es',     awayFl: 'de',     pred: '0 - 0', real: 'Pend.', points: null, status: 'Abierto', statusType: 'open', note: 'Partido de prueba.', kickoff: null, source: null, roundName: 'Group A', stage: 'GROUP_STAGE' },
+  { id: 2, home: 'Brasil',    away: 'Portugal',  homeFl: 'br',     awayFl: 'pt',     pred: '0 - 0', real: 'Pend.', points: null, status: 'Abierto', statusType: 'open', note: 'Pendiente de sincronizar.', kickoff: null, source: null, roundName: 'Group A', stage: 'GROUP_STAGE' },
+  { id: 3, home: 'Argentina', away: 'Francia',   homeFl: 'ar',     awayFl: 'fr',     pred: '0 - 0', real: 'Pend.', points: null, status: 'Abierto', statusType: 'open', note: 'Editable.', kickoff: null, source: null, roundName: 'Group B', stage: 'GROUP_STAGE' },
+  { id: 4, home: 'Inglaterra',away: 'Italia',    homeFl: 'gb-eng', awayFl: 'it',     pred: '0 - 0', real: 'Pend.', points: null, status: 'Abierto', statusType: 'open', note: 'Sin puntos todavia.', kickoff: null, source: null, roundName: 'Group B', stage: 'GROUP_STAGE' },
 ])
 
 const ranking = ref<RankingRow[]>([
@@ -266,6 +376,55 @@ const prizeRows = ref<PrizeRow[]>([
 ])
 
 const pendingPayments = ref<PendingPayment[]>([])
+const groupStandings = ref<GroupStanding[]>([])
+
+// ─── Apuesta inicial ──────────────────────────────────────────────────────────
+const initialBetStatus  = ref<{ hasInitialBet: boolean; predictedMatches: number } | null>(null)
+const showInitialBet    = ref(false)
+const initialPreds      = ref<Record<number, { home: number; away: number }>>({})
+const initialBetSaving  = ref(false)
+const initialBetSaved   = ref(false)
+
+async function loadInitialBetStatus() {
+  if (!activePoolId.value) return
+  const res = await fetchWithAuth(`${API_BASE_URL}/predictions/initial/status/${activePoolId.value}`)
+  if (res.ok) initialBetStatus.value = await res.json()
+}
+
+function openInitialBet() {
+  // Pre-fill with current LIVE predictions
+  matches.value.forEach(m => {
+    const parts = m.pred.replace(/\s/g, '').split('-')
+    initialPreds.value[m.id] = {
+      home: parseInt(parts[0] ?? '0') || 0,
+      away: parseInt(parts[1] ?? '0') || 0,
+    }
+  })
+  showInitialBet.value = true
+}
+
+async function saveInitialBet() {
+  initialBetSaving.value = true
+  try {
+    for (const [matchIdStr, pred] of Object.entries(initialPreds.value)) {
+      await fetchWithAuth(`${API_BASE_URL}/predictions/initial`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          poolId: activePoolId.value,
+          matchId: parseInt(matchIdStr),
+          homeGoals: pred.home,
+          awayGoals: pred.away,
+        }),
+      })
+    }
+    initialBetSaved.value = true
+    await loadInitialBetStatus()
+    setTimeout(() => { showInitialBet.value = false; initialBetSaved.value = false }, 1500)
+  } finally {
+    initialBetSaving.value = false
+  }
+}
 
 // ─── Admin state ───────────────────────────────────────────────────────────
 type Member = { memberId: number; userId: number; displayName: string; email: string; role: string; paymentStatus: string }
@@ -287,6 +446,17 @@ async function removeMember(memberId: number, name: string) {
   if (!confirm(`¿Eliminar a ${name} de la porra? Se borrarán sus predicciones y pagos.`)) return
   await fetchWithAuth(`${API_BASE_URL}/admin/members/${memberId}`, { method: 'DELETE' })
   await Promise.all([loadMembers(), loadDashboard()])
+}
+
+async function deletePool() {
+  const pool = selectedPool.value
+  if (!confirm(`¿Eliminar la porra "${pool.name}"? Dejará de mostrarse para todos los participantes.`)) return
+  const res = await fetchWithAuth(`${API_BASE_URL}/admin/pools/${activePoolId.value}`, { method: 'DELETE' })
+  if (!res.ok) { alert('No se pudo eliminar la porra'); return }
+  await loadMe()
+  activePool.value = userPools.value[0]?.id ?? null
+  if (userPools.value.length > 0) await loadRemoteState()
+  activeTab.value = 'home'
 }
 
 async function confirmPayment(paymentId: number) {
@@ -369,12 +539,13 @@ type PredModal = {
   awayGoals: number
   aiLoading: boolean
   aiSource: string | null
+  aiReasoning: string | null
 }
 const predModal = ref<PredModal>({
   open: false, matchId: null,
   home: '', away: '', homeFl: 'un', awayFl: 'un',
   homeGoals: 0, awayGoals: 0,
-  aiLoading: false, aiSource: null,
+  aiLoading: false, aiSource: null, aiReasoning: null,
 })
 
 function openPredModal(m: Match) {
@@ -386,7 +557,7 @@ function openPredModal(m: Match) {
     homeFl: m.homeFl, awayFl: m.awayFl,
     homeGoals: parseInt(parts[0] ?? '0') || 0,
     awayGoals: parseInt(parts[1] ?? '0') || 0,
-    aiLoading: false, aiSource: null,
+    aiLoading: false, aiSource: null, aiReasoning: null,
   }
 }
 
@@ -394,6 +565,7 @@ async function askAiPrediction() {
   if (!predModal.value.matchId) return
   predModal.value.aiLoading = true
   predModal.value.aiSource = null
+  predModal.value.aiReasoning = null
   try {
     const res = await fetchWithAuth(`${API_BASE_URL}/predictions/ai/${predModal.value.matchId}`, { method: 'POST' })
     const data = await res.json()
@@ -401,12 +573,85 @@ async function askAiPrediction() {
     predModal.value.homeGoals = data.homeGoals
     predModal.value.awayGoals = data.awayGoals
     predModal.value.aiSource = data.source
+    predModal.value.aiReasoning = data.reasoning ?? null
   } catch (e) {
     console.error('AI prediction failed', e)
   } finally {
     predModal.value.aiLoading = false
   }
 }
+
+// ─── Grupos colapsables ──────────────────────────────────────────────────────
+const collapsedGroups = ref<Set<string>>(new Set())
+
+type MatchGroup = { roundName: string; stage: string; matches: Match[]; predicted: number }
+
+const matchGroups = computed<MatchGroup[]>(() => {
+  const map = new Map<string, MatchGroup>()
+  for (const m of matches.value) {
+    const key = m.roundName ?? 'Sin grupo'
+    if (!map.has(key)) {
+      map.set(key, { roundName: key, stage: m.stage ?? 'GROUP_STAGE', matches: [], predicted: 0 })
+    }
+    const g = map.get(key)!
+    g.matches.push(m)
+    if (m.pred !== '? - ?') g.predicted++
+  }
+  return Array.from(map.values())
+})
+
+function getStandings(roundName: string): TeamStanding[] {
+  return groupStandings.value.find(g => g.roundName === roundName)?.teams ?? []
+}
+
+function toggleGroup(roundName: string) {
+  if (collapsedGroups.value.has(roundName)) {
+    collapsedGroups.value.delete(roundName)
+  } else {
+    collapsedGroups.value.add(roundName)
+  }
+  // trigger reactivity
+  collapsedGroups.value = new Set(collapsedGroups.value)
+}
+
+function isCollapsed(roundName: string) {
+  return collapsedGroups.value.has(roundName)
+}
+
+// Colapsar todos los grupos de fase de grupos por defecto al cargar partidos
+watch(matches, (newMatches) => {
+  if (newMatches.length > 0 && collapsedGroups.value.size === 0) {
+    const groups = new Set<string>()
+    for (const m of newMatches) {
+      if (m.stage === 'GROUP_STAGE' && m.roundName) groups.add(m.roundName)
+    }
+    collapsedGroups.value = groups
+  }
+}, { once: true })
+
+const predModalEl = ref<HTMLElement | null>(null)
+
+function focusTrap(e: KeyboardEvent, _containerClass: string) {
+  const container = (e.currentTarget as HTMLElement)
+  const focusable = Array.from(container.querySelectorAll<HTMLElement>(
+    'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+  ))
+  if (!focusable.length) return
+  const first = focusable[0]
+  const last  = focusable[focusable.length - 1]
+  if (e.shiftKey) {
+    if (document.activeElement === first) { last.focus(); }
+    else { focusable[focusable.indexOf(document.activeElement as HTMLElement) - 1]?.focus() }
+  } else {
+    if (document.activeElement === last) { first.focus(); }
+    else { focusable[focusable.indexOf(document.activeElement as HTMLElement) + 1]?.focus() }
+  }
+}
+
+// Auto-focus al primer botón al abrir el modal
+watch(() => predModal.value.open, (open) => {
+  if (open) nextTick(() => predModalEl.value?.querySelector<HTMLElement>('button')?.focus())
+})
 
 const bulkLoading = ref(false)
 
@@ -492,6 +737,7 @@ const apiSync = ref<ApiSyncState>({
 const allTabs = [
   { id: 'home'    as const, label: 'Inicio',   icon: Home,         adminOnly: false },
   { id: 'matches' as const, label: 'Partidos', icon: CalendarDays, adminOnly: false },
+  { id: 'bracket' as const, label: 'Cuadro',   icon: Crown,        adminOnly: false },
   { id: 'ranking' as const, label: 'Ranking',  icon: Trophy,       adminOnly: false },
   { id: 'prizes'  as const, label: 'Premios',  icon: Banknote,     adminOnly: false },
   { id: 'admin'   as const, label: 'Admin',    icon: Settings,     adminOnly: true  },
@@ -625,6 +871,14 @@ async function loadDashboard() {
   bracketRounds.value = data.bracketRounds
   pendingPayments.value = data.pendingPayments
   recommendations.value = data.recommendations
+  groupStandings.value = (data.groupStandings ?? []).map((g: any) => ({
+    roundName: g.roundName,
+    teams: g.teams.map((t: any) => ({
+      name: t.name, flag: t.flag,
+      played: t.played, won: t.won, drawn: t.drawn, lost: t.lost,
+      gf: t.gf, ga: t.ga, points: t.points,
+    })),
+  }))
   if (pools.value.length > 0 && !activePool.value) activePool.value = pools.value[0].id
 }
 
@@ -653,6 +907,32 @@ async function loadApiSyncStatus() {
   }
 }
 
+const CUTOFF_MINUTES = 60
+const now = ref(Date.now())
+onMounted(() => { setInterval(() => { now.value = Date.now() }, 30_000) })
+
+function cutoffMs(iso: string | null): number | null {
+  if (!iso) return null
+  return new Date(iso).getTime() - CUTOFF_MINUTES * 60_000
+}
+
+function isPredictionClosed(iso: string | null): boolean {
+  const c = cutoffMs(iso)
+  return c !== null && now.value >= c
+}
+
+function fmtCountdown(iso: string | null): string | null {
+  const c = cutoffMs(iso)
+  if (c === null) return null
+  const diff = c - now.value
+  if (diff <= 0) return 'Cerrado'
+  if (diff > 24 * 3600_000) return null  // más de 24h, no mostrar
+  const h = Math.floor(diff / 3600_000)
+  const m = Math.floor((diff % 3600_000) / 60_000)
+  if (h > 0) return `Cierra en ${h}h ${m}min`
+  return `Cierra en ${m}min`
+}
+
 function fmtKickoff(iso: string | null): string {
   if (!iso) return 'Por confirmar'
   const d = new Date(iso)
@@ -672,7 +952,7 @@ async function setActiveSource(source: 'WC26_IR' | 'API_FOOTBALL') {
 
 async function loadRemoteState() {
   try {
-    await Promise.all([loadDashboard(), loadApiSyncStatus()])
+    await Promise.all([loadDashboard(), loadApiSyncStatus(), loadInitialBetStatus()])
   } catch (error) {
     console.error('No se pudo cargar estado remoto', error)
   }
@@ -696,15 +976,25 @@ onMounted(async () => {
   } else {
     initGoogleAuth()
   }
+
+  // Refresca el dashboard cada 5 minutos si la app está abierta
+  setInterval(async () => {
+    if (authToken.value && activePoolId.value) {
+      await loadDashboard()
+    }
+  }, 5 * 60 * 1000)
 })
 
 watch(activeTab, async (tab) => {
   animateTabIn()
   if (tab === 'home') await loadDashboard()
-  if (tab === 'admin') await loadMembers()
+  if (tab === 'admin') await Promise.all([loadMembers(), loadSimStatus()])
 })
 
-watch(activePool, () => animatePoolSwitch())
+watch(activePool, async () => {
+  animatePoolSwitch()
+  await loadDashboard()
+})
 </script>
 
 <template>
@@ -712,7 +1002,7 @@ watch(activePool, () => animatePoolSwitch())
   <!-- ═══════════════ LOGIN ═══════════════ -->
   <div v-if="!authToken" class="login-screen">
     <div class="login-card" style="max-width:400px">
-      <span class="login-ball">⚽</span>
+      <img src="/logo.png" class="login-logo" alt="Mundia" />
       <h1>Mundia</h1>
       <p class="login-sub">Porra familiar · Mundial 2026</p>
 
@@ -721,6 +1011,12 @@ watch(activePool, () => animatePoolSwitch())
         <button :class="['auth-tab', { active: authMode === 'google' }]" @click="authMode = 'google'">Google</button>
         <button :class="['auth-tab', { active: authMode === 'login' }]" @click="authMode = 'login'">Email</button>
         <button :class="['auth-tab', { active: authMode === 'register' }]" @click="authMode = 'register'">Registrarse</button>
+      </div>
+
+      <!-- Código de acceso global (campo compartido por todos los tabs) -->
+      <div class="invite-form" style="width:100%;text-align:left;margin-bottom:4px">
+        <label class="invite-label">🔑 Código de acceso</label>
+        <input v-model="emailForm.accessCode" class="invite-input" type="password" placeholder="••••••••" autocomplete="off" />
       </div>
 
       <!-- Google -->
@@ -759,7 +1055,7 @@ watch(activePool, () => animatePoolSwitch())
   <!-- ═══════════════ ONBOARDING — sin porra ═══════════════ -->
   <div v-else-if="appReady && userPools.length === 0" class="login-screen">
     <div class="login-card" style="max-width:420px">
-      <span class="login-ball">⚽</span>
+      <img src="/logo.png" class="login-logo" alt="Mundia" />
       <h1>Bienvenido, {{ currentUser?.name?.split(' ')[0] }}</h1>
       <p class="login-sub">Crea tu porra o espera a que el admin te invite.</p>
 
@@ -792,7 +1088,7 @@ watch(activePool, () => animatePoolSwitch())
   <!-- ═══════════════ CARGANDO ═══════════════ -->
   <div v-else-if="authToken && !appReady" class="login-screen">
     <div class="login-card">
-      <span class="login-ball">⚽</span>
+      <img src="/logo.png" class="login-logo" alt="Mundia" />
       <p class="login-sub">Cargando…</p>
     </div>
   </div>
@@ -801,15 +1097,15 @@ watch(activePool, () => animatePoolSwitch())
 
     <!-- ═══════════════ TOPBAR ═══════════════ -->
     <header class="topbar">
-      <div class="brand">
-        <span class="brand-ball">⚽</span>
-        <div>
-          <p class="eyebrow">Porra familiar</p>
-          <h1>Mundia</h1>
+      <!-- Fila 1: brand + user -->
+      <div class="topbar-row topbar-row--main">
+        <div class="brand">
+          <img src="/logo.png" class="brand-logo" alt="Mundia" />
+          <div>
+            <p class="eyebrow">Porra familiar</p>
+            <h1>Mundia</h1>
+          </div>
         </div>
-      </div>
-
-      <div class="topbar-right">
         <div class="user-chip">
           <img v-if="currentUser?.avatarUrl" :src="currentUser.avatarUrl" class="user-avatar" :alt="currentUser.name" />
           <span v-else class="user-avatar user-avatar--initials">{{ currentUser ? currentUser.name.slice(0,2).toUpperCase() : '?' }}</span>
@@ -818,6 +1114,7 @@ watch(activePool, () => animatePoolSwitch())
         </div>
       </div>
 
+      <!-- Fila 2: selector de porra -->
       <div class="pool-switch" role="tablist" aria-label="Seleccionar porra">
         <button
           v-for="pool in pools"
@@ -866,27 +1163,30 @@ watch(activePool, () => animatePoolSwitch())
 
       <div class="next-match-card">
         <p class="eyebrow"><Zap :size="12" /> Próximo partido</p>
-        <div class="next-match-card__duel">
-          <div class="team-block">
-            <span class="fi fi-br flag-xl"></span>
-            <strong>Brasil</strong>
+        <template v-if="nextMatch">
+          <div class="next-match-card__duel">
+            <div class="team-block">
+              <span :class="`fi fi-${nextMatch.homeFl} flag-xl`"></span>
+              <strong>{{ nextMatch.home }}</strong>
+            </div>
+            <div class="vs-block">
+              <span class="vs-label">VS</span>
+              <span class="match-time">{{ fmtKickoff(nextMatch.kickoff) }}</span>
+            </div>
+            <div class="team-block">
+              <span :class="`fi fi-${nextMatch.awayFl} flag-xl`"></span>
+              <strong>{{ nextMatch.away }}</strong>
+            </div>
           </div>
-          <div class="vs-block">
-            <span class="vs-label">VS</span>
-            <span class="match-time">18:30</span>
+          <div class="next-match-card__pred">
+            <span>Tu predicción</span>
+            <strong>{{ nextMatch.pred }}</strong>
           </div>
-          <div class="team-block">
-            <span class="fi fi-pt flag-xl"></span>
-            <strong>Portugal</strong>
-          </div>
-        </div>
-        <div class="next-match-card__pred">
-          <span>Tu predicción</span>
-          <strong>0 - 0</strong>
-        </div>
-        <button class="btn btn--primary" type="button" @click="matches[0] && openPredModal(matches[0])">
-          <Pencil :size="15" /> Editar predicción
-        </button>
+          <button class="btn btn--primary" type="button" @click="openPredModal(nextMatch)">
+            <Pencil :size="15" /> Editar predicción
+          </button>
+        </template>
+        <p v-else class="muted">Sin partidos pendientes</p>
       </div>
     </section>
 
@@ -896,150 +1196,156 @@ watch(activePool, () => animatePoolSwitch())
       <!-- ─── INICIO ─── -->
       <template v-if="activeTab === 'home'">
 
-        <section class="bracket-section" aria-label="Cuadro del torneo">
-          <div class="section-header">
-            <Trophy :size="18" />
-            <div>
-              <h2>Tu cuadro del torneo</h2>
-              <p class="muted">Predicción inicial vs. resultados reales</p>
-            </div>
+        <!-- Banner alerta partidos que cierran hoy sin predecir -->
+        <div v-if="pendingCount > 0 && matches.some(m => fmtCountdown(m.kickoff) !== null && m.pred === '? - ?')" class="home-alert-banner">
+          <CircleAlert :size="18" />
+          <span>
+            Tienes <strong>{{ matches.filter(m => fmtCountdown(m.kickoff) !== null && m.pred === '? - ?').length }}</strong>
+            partido{{ matches.filter(m => fmtCountdown(m.kickoff) !== null && m.pred === '? - ?').length > 1 ? 's' : '' }}
+            que cierran hoy sin predecir
+          </span>
+          <button class="btn btn--sm btn--primary" type="button" @click="activeTab = 'matches'">
+            Predecir ahora
+          </button>
+        </div>
+
+        <!-- Banner apuesta inicial -->
+        <div v-if="initialBetStatus && !initialBetStatus.hasInitialBet" class="initial-bet-banner">
+          <Star :size="18" />
+          <div class="initial-bet-banner__text">
+            <strong>Haz tu apuesta inicial</strong>
+            <span>Predice todo el torneo antes de que empiece. Esta predicción es inmutable y genera su propio ranking.</span>
           </div>
+          <button class="btn btn--primary btn--sm" type="button" @click="openInitialBet">
+            Hacer apuesta
+          </button>
+        </div>
+        <div v-else-if="initialBetStatus?.hasInitialBet" class="initial-bet-banner initial-bet-banner--done">
+          <Check :size="18" />
+          <div class="initial-bet-banner__text">
+            <strong>Apuesta inicial guardada</strong>
+            <span>{{ initialBetStatus.predictedMatches }} partidos predichos · inmutable</span>
+          </div>
+          <button class="btn btn--ghost btn--sm" type="button" @click="openInitialBet">
+            Ver
+          </button>
+        </div>
 
-          <!-- Fase de Grupos -->
-          <template v-if="groupRounds.length">
-            <p class="phase-label"><span class="fi fi-un flag-xs"></span> Fase de Grupos</p>
-            <div class="groups-grid">
-              <div v-for="round in groupRounds" :key="round.name" class="group-block">
-                <p class="round-label">{{ round.name }}</p>
-                <div class="round-matches">
-                  <article
-                    v-for="m in round.matches"
-                    :key="`${round.name}-${m.home}`"
-                    :class="['bracket-card', { 'bracket-card--done': m.done }]"
-                  >
-                    <div class="bracket-team">
-                      <span :class="`fi fi-${m.homeFl} flag-sm`"></span>
-                      <span class="bracket-team__name">{{ m.home }}</span>
-                      <strong class="bracket-score">{{ m.pred.split('-')[0] }}</strong>
-                    </div>
-                    <div class="bracket-team">
-                      <span :class="`fi fi-${m.awayFl} flag-sm`"></span>
-                      <span class="bracket-team__name">{{ m.away }}</span>
-                      <strong class="bracket-score">{{ m.pred.split('-')[1] }}</strong>
-                    </div>
-                    <div class="bracket-footer">
-                      <span class="bracket-real">Real: {{ m.real }}</span>
-                      <span v-if="m.done" class="bracket-winner">→ {{ m.winner }}</span>
-                    </div>
-                  </article>
-                </div>
+        <!-- Stat banner -->
+        <div class="home-banner">
+          <div class="home-banner__stat">
+            <span class="home-banner__label">Tu posición</span>
+            <strong class="home-banner__val home-banner__val--pos">{{ myRanking ? posLabel(myRanking.pos) : '—' }}</strong>
+          </div>
+          <div class="home-banner__divider"></div>
+          <div class="home-banner__stat">
+            <span class="home-banner__label">Puntos</span>
+            <strong class="home-banner__val">{{ myRanking?.points ?? 0 }}</strong>
+          </div>
+          <div class="home-banner__divider"></div>
+          <div class="home-banner__stat">
+            <span class="home-banner__label">Tu premio</span>
+            <strong :class="['home-banner__val', myRanking && myRanking.prize > 0 ? 'home-banner__val--gold' : '']">
+              {{ myRanking && myRanking.prize > 0 ? myRanking.prize + ' €' : '—' }}
+            </strong>
+          </div>
+          <div class="home-banner__divider"></div>
+          <div class="home-banner__stat">
+            <span class="home-banner__label">Bote</span>
+            <strong class="home-banner__val home-banner__val--gold">{{ selectedPool.pot }} €</strong>
+          </div>
+          <div class="home-banner__divider"></div>
+          <div class="home-banner__stat">
+            <span class="home-banner__label">Participantes</span>
+            <strong class="home-banner__val">{{ selectedPool.paid }}/{{ selectedPool.members }}</strong>
+          </div>
+        </div>
+
+        <!-- Dos tarjetas acción -->
+        <div class="home-actions">
+
+          <!-- Próximo partido -->
+          <article class="panel home-action-card" v-if="nextMatch">
+            <div class="panel__header">
+              <Zap :size="16" />
+              <h2>Próximo partido</h2>
+              <span class="match-kickoff" style="margin-left:auto">{{ fmtKickoff(nextMatch.kickoff) }}</span>
+            </div>
+            <div class="home-match-duel">
+              <div class="team-block">
+                <span :class="`fi fi-${nextMatch.homeFl} flag-xl`"></span>
+                <strong>{{ nextMatch.home }}</strong>
+              </div>
+              <div class="vs-block">
+                <span class="vs-label">VS</span>
+                <span :class="['badge', `badge--${nextMatch.statusType}`]">{{ nextMatch.status }}</span>
+              </div>
+              <div class="team-block">
+                <span :class="`fi fi-${nextMatch.awayFl} flag-xl`"></span>
+                <strong>{{ nextMatch.away }}</strong>
               </div>
             </div>
-          </template>
+            <div class="next-match-card__pred">
+              <span>Tu predicción</span>
+              <strong>{{ nextMatch.pred }}</strong>
+            </div>
+            <button class="btn btn--primary" type="button" @click="openPredModal(nextMatch)">
+              <Pencil :size="14" /> Editar predicción
+            </button>
+          </article>
 
-          <!-- Eliminatorias -->
-          <template v-if="knockoutRounds.length">
-            <p class="phase-label"><ChevronRight :size="13" /> Eliminatorias</p>
-            <div class="bracket-scroll-wrap">
-              <div class="bracket-board">
-                <div v-for="round in knockoutRounds" :key="round.name" class="bracket-round">
-                  <p class="round-label">{{ round.name }}</p>
-                  <div class="round-matches">
-                    <article
-                      v-for="m in round.matches"
-                      :key="`${round.name}-${m.home}`"
-                      :class="['bracket-card', { 'bracket-card--done': m.done }]"
-                    >
-                      <div class="bracket-team">
-                        <span :class="`fi fi-${m.homeFl} flag-sm`"></span>
-                        <span class="bracket-team__name">{{ m.home }}</span>
-                        <strong class="bracket-score">{{ m.pred.split('-')[0] }}</strong>
-                      </div>
-                      <div class="bracket-team">
-                        <span :class="`fi fi-${m.awayFl} flag-sm`"></span>
-                        <span class="bracket-team__name">{{ m.away }}</span>
-                        <strong class="bracket-score">{{ m.pred.split('-')[1] }}</strong>
-                      </div>
-                      <div class="bracket-footer">
-                        <span class="bracket-real">Real: {{ m.real }}</span>
-                        <span class="bracket-winner">→ {{ m.winner }}</span>
-                      </div>
-                    </article>
-                  </div>
-                </div>
-                <div class="bracket-champion">
-                  <Crown :size="24" />
-                  <span class="eyebrow">Campeón</span>
-                  <span class="fi fi-un flag-lg"></span>
-                  <strong>Por decidir</strong>
-                </div>
+          <!-- Pendientes -->
+          <article class="panel home-action-card home-action-card--pending">
+            <div class="panel__header">
+              <CalendarDays :size="16" />
+              <h2>Predicciones</h2>
+            </div>
+            <div class="home-pending">
+              <div v-if="pendingCount > 0" class="home-pending__alert">
+                <CircleAlert :size="28" class="home-pending__icon" />
+                <p class="home-pending__num">{{ pendingCount }}</p>
+                <p class="home-pending__label">partidos sin<br>predecir</p>
+              </div>
+              <div v-else class="home-pending__ok">
+                <Check :size="28" class="home-pending__icon--ok" />
+                <p class="home-pending__label">¡Todo predicho!</p>
               </div>
             </div>
-          </template>
-        </section>
-
-        <div class="home-grid">
-          <article class="panel panel--prize">
-            <div class="panel__header">
-              <Sparkles :size="18" />
-              <h2>Todavía puedes ganar</h2>
-            </div>
-            <p class="prize-amount">0 €</p>
-            <p class="muted">Vas 1º · 0 puntos · premios pendientes</p>
-            <ul class="reco-list">
-              <li v-for="r in recommendations" :key="r.text" :class="`reco-item reco-item--${r.type}`">
-                <CircleAlert v-if="r.type === 'danger'" :size="14" />
-                <Check      v-else-if="r.type === 'success'" :size="14" />
-                <Star       v-else :size="14" />
-                <span>{{ r.text }}</span>
-              </li>
-            </ul>
-          </article>
-
-          <article class="panel panel--stats">
-            <div class="panel__header">
-              <TrendingUp :size="18" />
-              <h2>Tu jornada</h2>
-            </div>
-            <div class="mini-stats">
-              <div class="mini-stat"><span>Puntos</span><strong>0</strong></div>
-              <div class="mini-stat"><span>Exactos</span><strong>0</strong></div>
-              <div class="mini-stat"><span>Ganadores</span><strong>0</strong></div>
-              <div class="mini-stat"><span>Posicion</span><strong>1º</strong></div>
-            </div>
-          </article>
-
-          <article class="panel panel--initial">
-            <div class="panel__header">
-              <Medal :size="18" />
-              <h2>Apuesta inicial</h2>
-            </div>
-            <p class="initial-pos">-</p>
-            <p class="muted">0 pts · bonus pendiente</p>
-            <div class="tag-row">
-              <span class="tag tag--blue">0 exactos</span>
-              <span class="tag tag--blue">0 ganadores</span>
-              <span class="tag tag--gold">Pendiente</span>
-            </div>
-          </article>
-
-          <article class="panel panel--fix">
-            <div class="panel__header">
-              <CircleAlert :size="18" />
-              <h2>Corrección necesaria</h2>
-            </div>
-            <div class="fix-row">
-              <div>
-                <p class="fix-label">Cruce imposible · Cuartos</p>
-                <h3>Alemania no puede ser 1ª de grupo</h3>
-                <p class="muted">Cuando haya resultados reales, aqui apareceran los cambios recomendados.</p>
-              </div>
-              <button class="btn btn--icon" type="button" aria-label="Revisar cruce">
-                <ChevronRight :size="20" />
-              </button>
-            </div>
+            <button class="btn btn--outline" type="button" @click="activeTab = 'matches'">
+              <CalendarDays :size="14" /> Ver partidos
+            </button>
           </article>
         </div>
+
+        <!-- Top 3 ranking -->
+        <article class="panel home-ranking-panel">
+          <div class="panel__header">
+            <Trophy :size="16" />
+            <h2>Clasificación</h2>
+            <button class="btn btn--ghost btn--sm" style="margin-left:auto" type="button" @click="activeTab = 'ranking'">
+              Ver todo <ChevronRight :size="13" />
+            </button>
+          </div>
+          <div class="ranking-table">
+            <div
+              v-for="p in ranking.slice(0, 5)"
+              :key="p.name"
+              :class="['ranking-row', { 'ranking-row--alive': p.alive }, { 'ranking-row--me': p.name === currentUser?.name }]"
+            >
+              <span class="ranking-pos">{{ posLabel(p.pos) }}</span>
+              <div class="ranking-avatar">{{ p.avatar }}</div>
+              <div class="ranking-info">
+                <strong>{{ p.name }}</strong>
+                <small>{{ p.exact }} exactos · {{ p.winners }} ganadores</small>
+              </div>
+              <div class="ranking-right">
+                <strong>{{ p.points }} pts</strong>
+                <span :class="['delta', p.delta.startsWith('+') ? 'delta--up' : p.delta === '=' ? 'delta--eq' : 'delta--down']">{{ p.delta }}</span>
+              </div>
+            </div>
+          </div>
+        </article>
+
       </template>
 
       <!-- ─── PARTIDOS ─── -->
@@ -1047,7 +1353,7 @@ watch(activePool, () => animatePoolSwitch())
 
         <!-- Toolbar -->
         <div class="matches-toolbar">
-          <p class="muted">{{ matches.length }} partidos · {{ matches.filter(m => m.pred !== '0 - 0').length }} predichos</p>
+          <p class="muted">{{ matches.length }} partidos · {{ matches.filter(m => m.pred !== '? - ?').length }} predichos</p>
           <button
             class="btn btn--outline btn--sm"
             type="button"
@@ -1059,43 +1365,105 @@ watch(activePool, () => animatePoolSwitch())
           </button>
         </div>
 
-        <div class="matches-grid">
-          <article v-for="m in matches" :key="m.id" class="match-card">
-            <div class="match-card__top">
-              <span :class="['badge', `badge--${m.statusType}`]">{{ m.status }}</span>
-              <span class="match-kickoff">{{ fmtKickoff(m.kickoff) }}</span>
-              <strong v-if="m.points !== null" class="pts-badge">+{{ m.points }} pts</strong>
-            </div>
-            <div class="match-card__duel">
-              <div class="match-team">
-                <span :class="`fi fi-${m.homeFl} flag-lg`"></span>
-                <strong>{{ m.home }}</strong>
-              </div>
-              <div class="match-center">
-                <div class="score-display">
-                  <span>{{ m.pred }}</span>
-                  <small>predicción</small>
-                </div>
-                <span class="vs-divider">·</span>
-                <div class="score-display">
-                  <span>{{ m.real }}</span>
-                  <small>real</small>
-                </div>
-              </div>
-              <div class="match-team">
-                <span :class="`fi fi-${m.awayFl} flag-lg`"></span>
-                <strong>{{ m.away }}</strong>
-              </div>
-            </div>
+        <!-- Grupos colapsables -->
+        <div class="match-groups">
+          <section v-for="group in matchGroups" :key="group.roundName" class="match-group">
+
+            <!-- Cabecera del grupo -->
             <button
-              v-if="m.statusType === 'open' || m.statusType === 'warning'"
-              class="btn btn--primary btn--sm"
+              class="match-group__header"
               type="button"
-              @click="openPredModal(m)"
+              @click="toggleGroup(group.roundName)"
             >
-              <Pencil :size="13" /> Editar predicción
+              <span class="match-group__chevron" :class="{ 'match-group__chevron--open': !isCollapsed(group.roundName) }">
+                <ChevronRight :size="15" />
+              </span>
+              <span class="match-group__name">{{ group.roundName }}</span>
+              <span class="match-group__badge" :class="group.stage === 'GROUP_STAGE' ? 'badge--draft' : 'badge--active'">
+                {{ group.stage === 'GROUP_STAGE' ? 'Fase de grupos' : 'Eliminatoria' }}
+              </span>
+              <span class="match-group__progress">
+                {{ group.predicted }}/{{ group.matches.length }}
+                <span class="match-group__progress-bar">
+                  <span
+                    class="match-group__progress-fill"
+                    :style="{ width: group.matches.length ? (group.predicted / group.matches.length * 100) + '%' : '0%' }"
+                  ></span>
+                </span>
+              </span>
             </button>
-          </article>
+
+            <!-- Mini clasificación (solo visible cuando colapsado y hay datos) -->
+            <div
+              v-if="isCollapsed(group.roundName) && getStandings(group.roundName).length > 0"
+              class="match-group__standings"
+            >
+              <div
+                v-for="(team, idx) in getStandings(group.roundName)"
+                :key="team.name"
+                :class="['standing-row', idx < 2 ? 'standing-row--qualify' : '']"
+              >
+                <span class="standing-pos">{{ idx + 1 }}</span>
+                <span :class="`fi fi-${team.flag} flag-xs`"></span>
+                <span class="standing-name">{{ team.name }}</span>
+                <span class="standing-stats">
+                  {{ team.played }}J &nbsp;{{ team.won }}G {{ team.drawn }}E {{ team.lost }}P
+                  &nbsp;{{ team.gf }}-{{ team.ga }}
+                </span>
+                <strong class="standing-pts">{{ team.points }}pts</strong>
+              </div>
+            </div>
+
+            <!-- Partidos del grupo -->
+            <div v-show="!isCollapsed(group.roundName)" class="match-group__body">
+              <div class="matches-grid">
+                <article v-for="m in group.matches" :key="m.id" class="match-card">
+                  <div class="match-card__top">
+                    <span :class="['badge', isPredictionClosed(m.kickoff) ? 'badge--closed' : `badge--${m.statusType}`]">
+                      {{ isPredictionClosed(m.kickoff) ? 'Cerrado' : m.status }}
+                    </span>
+                    <span class="match-kickoff">{{ fmtKickoff(m.kickoff) }}</span>
+                    <strong v-if="m.points !== null" class="pts-badge">+{{ m.points }} pts</strong>
+                  </div>
+                  <div class="match-card__duel">
+                    <div class="match-team">
+                      <span :class="`fi fi-${m.homeFl} flag-lg`"></span>
+                      <strong>{{ m.home }}</strong>
+                    </div>
+                    <div class="match-center">
+                      <div class="score-display">
+                        <span>{{ m.pred }}</span>
+                        <small>predicción</small>
+                      </div>
+                      <span class="vs-divider">·</span>
+                      <div class="score-display">
+                        <span>{{ m.real }}</span>
+                        <small>real</small>
+                      </div>
+                    </div>
+                    <div class="match-team">
+                      <span :class="`fi fi-${m.awayFl} flag-lg`"></span>
+                      <strong>{{ m.away }}</strong>
+                    </div>
+                  </div>
+                  <span v-if="fmtCountdown(m.kickoff)" class="match-countdown">
+                    ⏱ {{ fmtCountdown(m.kickoff) }}
+                  </span>
+                  <button
+                    v-if="m.statusType === 'open' || m.statusType === 'warning'"
+                    class="btn btn--sm"
+                    :class="isPredictionClosed(m.kickoff) ? 'btn--outline' : 'btn--primary'"
+                    type="button"
+                    :disabled="isPredictionClosed(m.kickoff)"
+                    @click="openPredModal(m)"
+                  >
+                    <Pencil :size="13" /> {{ isPredictionClosed(m.kickoff) ? 'Predicción cerrada' : 'Editar predicción' }}
+                  </button>
+                </article>
+              </div>
+            </div>
+
+          </section>
         </div>
       </template>
 
@@ -1119,7 +1487,7 @@ watch(activePool, () => animatePoolSwitch())
           <article class="panel ranking-table-panel">
             <div class="panel__header"><Trophy :size="18" /><h2>Clasificación general</h2></div>
             <div class="ranking-table">
-              <div v-for="p in ranking" :key="p.name" :class="['ranking-row', { 'ranking-row--alive': p.alive }]">
+              <div v-for="p in ranking" :key="p.name" :class="['ranking-row', { 'ranking-row--alive': p.alive }, { 'ranking-row--me': p.name === currentUser?.name }]">
                 <span class="ranking-pos">{{ posLabel(p.pos) }}</span>
                 <div class="ranking-avatar">{{ p.avatar }}</div>
                 <div class="ranking-info">
@@ -1130,8 +1498,12 @@ watch(activePool, () => animatePoolSwitch())
                   <strong>{{ p.points }} pts</strong>
                   <span :class="['delta', p.delta.startsWith('+') ? 'delta--up' : p.delta === '=' ? 'delta--eq' : 'delta--down']">{{ p.delta }}</span>
                 </div>
-                <span v-if="p.prize > 0" class="ranking-prize">≈{{ p.prize }} €</span>
-                <span v-if="p.alive" class="tag tag--green tag--xs">🔥 Pleno vivo</span>
+                <div class="ranking-prize-col">
+                  <span :class="['ranking-prize-total', p.prize > 0 ? 'ranking-prize-total--won' : '']">
+                    {{ p.prize > 0 ? p.prize + ' €' : '—' }}
+                  </span>
+                  <span v-if="p.alive" class="tag tag--green tag--xs">🔥 Pleno</span>
+                </div>
               </div>
             </div>
           </article>
@@ -1153,6 +1525,115 @@ watch(activePool, () => animatePoolSwitch())
               </div>
             </div>
           </article>
+        </div>
+      </template>
+
+      <!-- ─── CUADRO ─── -->
+      <template v-if="activeTab === 'bracket'">
+        <div class="bracket-tab">
+
+          <!-- Fase de grupos -->
+          <div v-if="bracketRounds.filter(r => r.name.startsWith('Group')).length" class="bracket-tab__section">
+            <div class="bracket-tab__phase-header">
+              <span class="fi fi-un flag-xs"></span>
+              <h2>Fase de Grupos</h2>
+            </div>
+            <div class="bracket-groups-grid">
+              <div
+                v-for="round in bracketRounds.filter(r => r.name.startsWith('Group'))"
+                :key="round.name"
+                class="bracket-group-card"
+              >
+                <p class="bracket-group-card__title">{{ round.name }}</p>
+                <div class="bracket-group-card__matches">
+                  <div
+                    v-for="m in round.matches"
+                    :key="`${round.name}-${m.home}`"
+                    :class="['bracket-mini-match', { 'bracket-mini-match--done': m.done }]"
+                  >
+                    <div class="bracket-mini-team">
+                      <span :class="`fi fi-${m.homeFl} flag-xs`"></span>
+                      <span>{{ m.home }}</span>
+                      <strong>{{ m.pred.split('-')[0] }}</strong>
+                    </div>
+                    <div class="bracket-mini-team">
+                      <span :class="`fi fi-${m.awayFl} flag-xs`"></span>
+                      <span>{{ m.away }}</span>
+                      <strong>{{ m.pred.split('-')[1] }}</strong>
+                    </div>
+                    <div v-if="m.done" class="bracket-mini-result">
+                      {{ m.real }} · <span class="bracket-winner">{{ m.winner }}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Eliminatorias -->
+          <div v-if="bracketRounds.filter(r => !r.name.startsWith('Group')).length" class="bracket-tab__section">
+            <div class="bracket-tab__phase-header">
+              <ChevronRight :size="16" />
+              <h2>Eliminatorias</h2>
+            </div>
+            <div class="bracket-knockout">
+              <div
+                v-for="round in bracketRounds.filter(r => !r.name.startsWith('Group'))"
+                :key="round.name"
+                class="bracket-knockout__round"
+              >
+                <p class="bracket-knockout__round-label">{{ round.name }}</p>
+                <div class="bracket-knockout__matches">
+                  <div
+                    v-for="m in round.matches"
+                    :key="`${round.name}-${m.home}`"
+                    :class="['bracket-ko-card',
+                      { 'bracket-ko-card--done': m.done },
+                      { 'bracket-ko-card--final': round.name === 'Final' }]"
+                  >
+                    <div :class="['bracket-ko-team',
+                      { 'bracket-ko-team--winner': m.done && m.winner === m.home },
+                      { 'bracket-ko-team--champion': round.name === 'Final' && m.done && m.winner === m.home }]">
+                      <span :class="`fi fi-${m.homeFl} flag-sm`"></span>
+                      <span>{{ m.home }}</span>
+                      <span v-if="round.name === 'Final' && m.done && m.winner === m.home" class="champion-crown">👑</span>
+                      <strong v-if="m.done">{{ m.real.split('-')[0] }}</strong>
+                    </div>
+                    <div :class="['bracket-ko-team',
+                      { 'bracket-ko-team--winner': m.done && m.winner === m.away },
+                      { 'bracket-ko-team--champion': round.name === 'Final' && m.done && m.winner === m.away }]">
+                      <span :class="`fi fi-${m.awayFl} flag-sm`"></span>
+                      <span>{{ m.away }}</span>
+                      <span v-if="round.name === 'Final' && m.done && m.winner === m.away" class="champion-crown">👑</span>
+                      <strong v-if="m.done">{{ m.real.split('-')[1] }}</strong>
+                    </div>
+                    <div v-if="!m.done" class="bracket-ko-pending">Por jugar</div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Campeón -->
+              <div class="bracket-champion">
+                <Crown :size="28" />
+                <span class="eyebrow">Campeón</span>
+                <template v-if="champion">
+                  <span :class="`fi fi-${champion.flag} flag-lg`"></span>
+                  <strong>{{ champion.name }}</strong>
+                </template>
+                <template v-else>
+                  <span class="fi fi-un flag-lg"></span>
+                  <strong>Por decidir</strong>
+                </template>
+              </div>
+            </div>
+          </div>
+
+          <!-- Sin datos -->
+          <div v-if="!bracketRounds.length" class="bracket-tab__empty">
+            <Crown :size="40" style="color:var(--gold);opacity:0.4" />
+            <p>El cuadro aparecerá aquí cuando avance el torneo.</p>
+          </div>
+
         </div>
       </template>
 
@@ -1319,6 +1800,17 @@ watch(activePool, () => animatePoolSwitch())
               <div class="config-item"><span>Bonus apuesta inicial</span><strong class="text-green">Sí</strong></div>
               <div class="config-item"><span>Predicciones visibles</span><strong class="text-muted">Al cerrar fase</strong></div>
             </div>
+            <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
+              <button
+                class="btn btn--sm"
+                style="color:var(--coral);border:1px solid rgba(251,113,133,0.3);background:var(--coral-dim)"
+                type="button"
+                @click="deletePool"
+              >
+                🗑 Eliminar esta porra
+              </button>
+              <p class="muted" style="font-size:0.72rem;margin-top:8px">La porra dejará de mostrarse. Los datos se conservan en la base de datos.</p>
+            </div>
           </article>
 
           <!-- ★ API-Football Sync Panel ★ -->
@@ -1456,6 +1948,131 @@ watch(activePool, () => animatePoolSwitch())
             </p>
           </article>
 
+          <!-- ★ Simulador ★ -->
+          <article class="panel admin-wide-panel sim-panel">
+            <div class="panel__header">
+              <Zap :size="18" style="color:var(--gold)" />
+              <h2>Simulador de torneo</h2>
+              <span class="badge badge--warning" style="font-size:0.65rem">DEV</span>
+            </div>
+
+            <div v-if="sim" class="sim-body">
+
+              <!-- Setup usuarios -->
+              <div class="sim-section">
+                <p class="sim-section__label">👥 Usuarios simulados</p>
+                <div class="sim-row">
+                  <div class="sim-count-btns">
+                    <button v-for="n in [3,5,8,10]" :key="n"
+                      :class="['btn btn--sm', simUserCount === n ? 'btn--primary' : 'btn--outline']"
+                      type="button" @click="simUserCount = n">{{ n }}</button>
+                  </div>
+                  <button class="btn btn--sm btn--primary" type="button"
+                    :disabled="simLoading" @click="simCreateUsers">
+                    <Users :size="13" /> Crear usuarios
+                  </button>
+                  <span class="sim-users-count">
+                    {{ sim.simUsers }} activos
+                  </span>
+                </div>
+              </div>
+
+              <!-- Avanzar día -->
+              <div class="sim-section">
+                <p class="sim-section__label">📅 Progreso del torneo</p>
+                <div class="sim-day-bar">
+                  <div class="sim-day-bar__fill" :style="{ width: sim.totalDays ? (sim.simDay / sim.totalDays * 100) + '%' : '0%' }"></div>
+                </div>
+                <div class="sim-row" style="margin-top:8px">
+                  <span class="sim-day-info">
+                    <strong>Día {{ sim.simDay }}</strong> de {{ sim.totalDays }}
+                    <span v-if="sim.currentDate" class="muted"> · {{ sim.currentDate }}</span>
+                  </span>
+                  <button
+                    class="btn btn--primary"
+                    type="button"
+                    :disabled="simLoading || sim.simDay >= sim.totalDays"
+                    @click="simAdvanceDay"
+                  >
+                    <Zap :size="14" :class="{ spin: simLoading }" />
+                    {{ simLoading ? 'Simulando…' : sim.simDay >= sim.totalDays ? 'Completado' : '▶ Simular día ' + (sim.simDay + 1) }}
+                  </button>
+                </div>
+              </div>
+
+              <!-- Timeline de días -->
+              <div class="sim-days-scroll">
+                <div
+                  v-for="d in sim.days"
+                  :key="d.day"
+                  :class="['sim-day-chip', {
+                    'sim-day-chip--done': d.done,
+                    'sim-day-chip--current': d.day === sim.simDay + 1
+                  }]"
+                >
+                  <span class="sim-day-chip__day">D{{ d.day }}</span>
+                  <span class="sim-day-chip__date">{{ d.date.slice(5) }}</span>
+                  <span class="sim-day-chip__matches">{{ d.matches }}p</span>
+                </div>
+              </div>
+
+              <!-- Simular torneo completo -->
+              <div class="sim-section">
+                <button
+                  class="btn btn--primary"
+                  style="width:100%;background:linear-gradient(135deg,var(--gold),var(--purple))"
+                  type="button"
+                  :disabled="simLoading"
+                  @click="simFullTournament"
+                >
+                  <Zap :size="15" :class="{ spin: simLoading }" />
+                  {{ simLoading ? 'Simulando torneo…' : '⚡ Simular torneo completo' }}
+                </button>
+              </div>
+
+              <!-- Eliminatorias -->
+              <div class="sim-section">
+                <p class="sim-section__label">🏆 Eliminatorias paso a paso</p>
+                <div class="sim-row" style="flex-wrap:wrap">
+                  <button
+                    class="btn btn--sm btn--outline"
+                    type="button"
+                    :disabled="simLoading || sim.simDay < sim.totalDays"
+                    @click="simGenRound32"
+                    :title="sim.simDay < sim.totalDays ? 'Completa la fase de grupos primero' : ''"
+                  >
+                    ⚡ Generar Round of 32
+                  </button>
+                  <button
+                    v-for="round in KNOCKOUT_ROUNDS"
+                    :key="round.next"
+                    class="btn btn--sm btn--outline"
+                    type="button"
+                    :disabled="simLoading"
+                    @click="simGenNextRound(round)"
+                  >
+                    → {{ round.next }}
+                  </button>
+                </div>
+              </div>
+
+              <!-- Reset -->
+              <div class="sim-section" style="margin-top:4px">
+                <button
+                  class="btn btn--sm"
+                  style="color:var(--coral);border:1px solid rgba(251,113,133,0.3);background:var(--coral-dim);width:100%"
+                  type="button"
+                  :disabled="simLoading"
+                  @click="simReset"
+                >
+                  🗑 Borrar simulación completa
+                </button>
+              </div>
+
+            </div>
+            <div v-else class="muted" style="font-size:0.8rem">Cargando estado del simulador…</div>
+          </article>
+
         </div>
       </template>
 
@@ -1473,14 +2090,18 @@ watch(activePool, () => animatePoolSwitch())
         <component :is="tab.icon" :size="20" />
         <span>{{ tab.label }}</span>
       </button>
+      <button class="nav-item nav-item--help" type="button" @click="showHelp = true" aria-label="Ayuda">
+        <span class="help-icon">?</span>
+        <span>Ayuda</span>
+      </button>
     </nav>
 
   </main>
 
   <!-- ═══════════════ MODAL PREDICCIÓN ═══════════════ -->
   <Teleport to="body">
-    <div v-if="predModal.open" class="pred-backdrop" @click.self="predModal.open = false">
-      <div class="pred-modal" role="dialog" aria-modal="true">
+    <div v-if="predModal.open" class="pred-backdrop" @click.self="predModal.open = false" @keydown.esc="predModal.open = false">
+      <div class="pred-modal" role="dialog" aria-modal="true" aria-label="Editar predicción" @keydown.tab.prevent="focusTrap($event, 'pred-modal')" ref="predModalEl">
 
         <!-- Header -->
         <div class="pred-modal__header">
@@ -1502,7 +2123,7 @@ watch(activePool, () => animatePoolSwitch())
             <div class="pred-stepper">
               <button type="button" @click="predModal.homeGoals = Math.max(0, predModal.homeGoals - 1)">−</button>
               <span class="pred-stepper__val">{{ predModal.homeGoals }}</span>
-              <button type="button" @click="predModal.homeGoals = Math.min(3, predModal.homeGoals + 1)">+</button>
+              <button type="button" @click="predModal.homeGoals = Math.min(4, predModal.homeGoals + 1)">+</button>
             </div>
           </div>
           <span class="pred-dash">—</span>
@@ -1512,16 +2133,19 @@ watch(activePool, () => animatePoolSwitch())
             <div class="pred-stepper">
               <button type="button" @click="predModal.awayGoals = Math.max(0, predModal.awayGoals - 1)">−</button>
               <span class="pred-stepper__val">{{ predModal.awayGoals }}</span>
-              <button type="button" @click="predModal.awayGoals = Math.min(3, predModal.awayGoals + 1)">+</button>
+              <button type="button" @click="predModal.awayGoals = Math.min(4, predModal.awayGoals + 1)">+</button>
             </div>
           </div>
         </div>
 
         <!-- AI badge when predicted -->
-        <p v-if="predModal.aiSource" class="pred-ai-badge">
-          <Sparkles :size="12" />
-          {{ predModal.aiSource.startsWith('gpt') ? 'Predicción generada por ChatGPT' : 'Predicción aleatoria (IA no disponible)' }}
-        </p>
+        <div v-if="predModal.aiSource" class="pred-ai-block">
+          <p class="pred-ai-badge">
+            <Sparkles :size="12" />
+            {{ predModal.aiSource.startsWith('gpt') ? 'Predicción generada por ChatGPT' : 'Predicción aleatoria (IA no disponible)' }}
+          </p>
+          <p v-if="predModal.aiReasoning" class="pred-ai-reasoning">{{ predModal.aiReasoning }}</p>
+        </div>
 
         <!-- Actions -->
         <div class="pred-modal__actions">
@@ -1545,8 +2169,8 @@ watch(activePool, () => animatePoolSwitch())
 
   <!-- ═══════════════ MODAL INVITAR ═══════════════ -->
   <Teleport to="body">
-    <div v-if="inviteModal.open" class="pred-backdrop" @click.self="inviteModal.open = false">
-      <div class="pred-modal" role="dialog" aria-modal="true" style="max-width:360px">
+    <div v-if="inviteModal.open" class="pred-backdrop" @click.self="inviteModal.open = false" @keydown.esc="inviteModal.open = false">
+      <div class="pred-modal" role="dialog" aria-modal="true" aria-label="Añadir participante" style="max-width:360px" @keydown.tab.prevent="focusTrap($event, 'pred-modal')">
         <div class="pred-modal__header">
           <div class="pred-modal__teams"><Users :size="18" /><strong>Añadir participante</strong></div>
           <button class="pred-modal__close" type="button" @click="inviteModal.open = false">✕</button>
@@ -1581,6 +2205,192 @@ watch(activePool, () => animatePoolSwitch())
             <Check :size="14" /> {{ inviteModal.loading ? 'Añadiendo…' : 'Añadir' }}
           </button>
         </div>
+      </div>
+    </div>
+  </Teleport>
+
+  <!-- ═══════════════ MODAL APUESTA INICIAL ═══════════════ -->
+  <Teleport to="body">
+    <div v-if="showInitialBet" class="pred-backdrop help-backdrop" @click.self="showInitialBet = false" @keydown.esc="showInitialBet = false">
+      <div class="help-modal initial-bet-modal" role="dialog" aria-modal="true" aria-label="Apuesta inicial">
+
+        <div class="help-modal__header">
+          <div class="help-title">
+            <span class="help-title__ball">⭐</span>
+            <div>
+              <h2>Apuesta inicial</h2>
+              <p class="muted">Inmutable · Se guarda para siempre</p>
+            </div>
+          </div>
+          <button class="pred-modal__close" type="button" @click="showInitialBet = false">✕</button>
+        </div>
+
+        <!-- Saved confirmation -->
+        <div v-if="initialBetSaved" class="initial-saved-msg">
+          <Check :size="28" />
+          <strong>¡Apuesta guardada!</strong>
+        </div>
+
+        <div v-else>
+          <!-- Info -->
+          <p class="initial-bet-info">
+            Predice <strong>todos los partidos</strong> del torneo. Esta predicción no se puede cambiar una vez cerrado cada partido — es tu apuesta inicial permanente.
+          </p>
+
+          <!-- Matches by group -->
+          <div class="initial-bet-groups">
+            <div v-for="group in matchGroups" :key="group.roundName" class="initial-bet-group">
+              <p class="initial-bet-group__title">{{ group.roundName }}
+                <span class="badge badge--draft" style="font-size:0.6rem">{{ group.stage === 'GROUP_STAGE' ? 'Grupos' : 'Eliminatoria' }}</span>
+              </p>
+              <div class="initial-bet-matches">
+                <div v-for="m in group.matches" :key="m.id" class="initial-bet-row">
+                  <div class="initial-bet-row__teams">
+                    <span :class="`fi fi-${m.homeFl} flag-xs`"></span>
+                    <span class="initial-bet-row__name">{{ m.home }}</span>
+                  </div>
+                  <div class="pred-stepper pred-stepper--sm">
+                    <button type="button" @click="initialPreds[m.id] = { home: Math.max(0, (initialPreds[m.id]?.home ?? 0) - 1), away: initialPreds[m.id]?.away ?? 0 }">−</button>
+                    <span class="pred-stepper__val pred-stepper__val--sm">{{ initialPreds[m.id]?.home ?? 0 }}</span>
+                    <button type="button" @click="initialPreds[m.id] = { home: Math.min(4, (initialPreds[m.id]?.home ?? 0) + 1), away: initialPreds[m.id]?.away ?? 0 }">+</button>
+                  </div>
+                  <span class="initial-bet-row__dash">—</span>
+                  <div class="pred-stepper pred-stepper--sm">
+                    <button type="button" @click="initialPreds[m.id] = { home: initialPreds[m.id]?.home ?? 0, away: Math.max(0, (initialPreds[m.id]?.away ?? 0) - 1) }">−</button>
+                    <span class="pred-stepper__val pred-stepper__val--sm">{{ initialPreds[m.id]?.away ?? 0 }}</span>
+                    <button type="button" @click="initialPreds[m.id] = { home: initialPreds[m.id]?.home ?? 0, away: Math.min(4, (initialPreds[m.id]?.away ?? 0) + 1) }">+</button>
+                  </div>
+                  <div class="initial-bet-row__teams initial-bet-row__teams--right">
+                    <span class="initial-bet-row__name">{{ m.away }}</span>
+                    <span :class="`fi fi-${m.awayFl} flag-xs`"></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="pred-modal__actions" style="margin-top:16px">
+            <button class="btn btn--outline btn--sm" type="button" @click="showInitialBet = false">Cancelar</button>
+            <button
+              class="btn btn--primary"
+              type="button"
+              :disabled="initialBetSaving || initialBetStatus?.hasInitialBet"
+              @click="saveInitialBet"
+            >
+              <Check :size="14" />
+              {{ initialBetSaving ? 'Guardando…' : initialBetStatus?.hasInitialBet ? 'Ya guardada' : 'Guardar apuesta inicial' }}
+            </button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </Teleport>
+
+  <!-- ═══════════════ MODAL AYUDA ═══════════════ -->
+  <Teleport to="body">
+    <div v-if="showHelp" class="pred-backdrop help-backdrop" @click.self="showHelp = false" @keydown.esc="showHelp = false">
+      <div class="help-modal" role="dialog" aria-modal="true" aria-label="Ayuda">
+
+        <div class="help-modal__header">
+          <div class="help-title">
+            <img src="/logo.png" class="help-title__logo" alt="Mundia" />
+            <div>
+              <h2>Cómo funciona Mundia</h2>
+              <p class="muted">Todo lo que necesitas saber</p>
+            </div>
+          </div>
+          <button class="pred-modal__close" type="button" @click="showHelp = false">✕</button>
+        </div>
+
+        <div class="help-sections">
+
+          <div class="help-section">
+            <div class="help-section__icon help-section__icon--blue">🎯</div>
+            <div>
+              <h3>¿Cómo funciona?</h3>
+              <p>Predice el resultado de cada partido antes de que empiece. Cuantos más aciertos, más puntos y más opciones de ganar el bote.</p>
+            </div>
+          </div>
+
+          <div class="help-section">
+            <div class="help-section__icon help-section__icon--gold">⭐</div>
+            <div>
+              <h3>¿Cómo consigo puntos?</h3>
+              <div class="help-points">
+                <div class="help-point">
+                  <span class="help-point__val">+2</span>
+                  <span>Aciertas el ganador o el empate</span>
+                </div>
+                <div class="help-point">
+                  <span class="help-point__val">+2</span>
+                  <span>Aciertas el resultado exacto</span>
+                </div>
+                <div class="help-point">
+                  <span class="help-point__val">+1</span>
+                  <span>Aciertas los goles del local</span>
+                </div>
+                <div class="help-point">
+                  <span class="help-point__val">+1</span>
+                  <span>Aciertas los goles del visitante</span>
+                </div>
+                <div class="help-point help-point--max">
+                  <span class="help-point__val">6</span>
+                  <span>Máximo por partido</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="help-section">
+            <div class="help-section__icon help-section__icon--coral">⏱</div>
+            <div>
+              <h3>¿Cuándo cierran las predicciones?</h3>
+              <p><strong>60 minutos antes</strong> de cada partido. Después ya no puedes cambiarla, ¡así que no te despistes!</p>
+            </div>
+          </div>
+
+          <div class="help-section">
+            <div class="help-section__icon help-section__icon--gold">🏆</div>
+            <div>
+              <h3>El Pleno de Ganadores</h3>
+              <p>Si aciertas <strong>todos los ganadores</strong> del torneo desde el principio, te llevas el <strong>75% del bote</strong>. Se pierde en cuanto fallas uno.</p>
+            </div>
+          </div>
+
+          <div class="help-section">
+            <div class="help-section__icon help-section__icon--green">💶</div>
+            <div>
+              <h3>¿Es obligatorio pagar?</h3>
+              <p>No. La porra puede ser solo por diversión, sin bote. Si hay inscripción, el admin confirma quién ha pagado.</p>
+            </div>
+          </div>
+
+          <div class="help-section">
+            <div class="help-section__icon help-section__icon--purple">👤</div>
+            <div>
+              <h3>¿Cómo me registro?</h3>
+              <p>Con tu cuenta de Google o con email y contraseña. Si el admin ya te ha añadido, entra con el mismo email.</p>
+              <p style="margin-top:6px;padding:8px 10px;border-radius:8px;background:rgba(251,191,36,0.08);border:1px solid rgba(251,191,36,0.2);color:var(--gold);font-size:0.78rem;line-height:1.5;">
+                ⏩ Si el Mundial ya ha empezado, puedes unirte igualmente. Los partidos ya jugados contarán como 0 puntos — competirás desde el momento en que entres.
+              </p>
+            </div>
+          </div>
+
+          <div class="help-section">
+            <div class="help-section__icon help-section__icon--blue">🔧</div>
+            <div>
+              <h3>¿Quién es el admin?</h3>
+              <p>El que crea la porra. Se encarga de añadir participantes, confirmar pagos <em>(si los hay)</em> y gestionar la porra. Los resultados se cargan automáticamente — el admin solo interviene si falla la fuente de datos.</p>
+            </div>
+          </div>
+
+        </div>
+
+        <button class="btn btn--primary" style="width:100%;margin-top:4px" type="button" @click="showHelp = false">
+          ¡Entendido, a predecir! 🚀
+        </button>
+
       </div>
     </div>
   </Teleport>

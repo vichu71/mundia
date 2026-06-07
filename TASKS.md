@@ -1,151 +1,127 @@
 # TASKS · Mundia
+> Última actualización: 2026-06-06
+> Mundial empieza en ~5 días. Prioridad máxima en avisos y cierre de predicciones.
 
-Estado de progreso operativo para construir la app siguiendo el SDD.
+Leyenda: `[x]` Hecho · `[~]` En progreso · `[ ]` Pendiente · `[!]` Urgente pre-mundial
 
-Leyenda:
+---
 
-- `[x]` Hecho
-- `[~]` En progreso
-- `[ ]` Pendiente
+## ✅ Completado
 
-## Fase 0 · Decisiones Base
+### Auth & Usuarios
+- [x] Google OAuth login + JWT (30d)
+- [x] Login/registro por email+contraseña
+- [x] Código de acceso global configurable
+- [x] /api/me endpoint
+- [x] Onboarding: crear porra al primer login
 
-- [x] Confirmar stack: Vue + Spring Boot + MariaDB.
-- [x] Confirmar estructura en tres proyectos: `frontend`, `backend`, `database`.
-- [x] Confirmar pagos manuales por Bizum o metalico.
-- [x] Confirmar que el admin marca participantes como pagados.
-- [x] Confirmar varias porras/apuestas por usuario.
-- [x] Confirmar invitaciones por codigo/enlace/email con aceptacion.
-- [x] Confirmar carga manual de resultados como fallback.
-- [x] Confirmar API-Football como proveedor automatizable de fixtures/resultados.
-- [x] Confirmar que la API key vive solo en Spring Boot.
-- [x] Definir proyecto dockerizado con `docker-compose.yml`.
+### Porras & Miembros
+- [x] Crear porra desde onboarding
+- [x] Selector de porras en topbar
+- [x] Admin puede añadir/eliminar participantes
+- [x] Confirmar pagos desde panel admin
+- [x] Roles ADMIN / PLAYER
 
-## Fase 1 · SDD y Producto
+### Predicciones
+- [x] Modal de predicción con stepper (max 4 goles)
+- [x] Guardar predicción en DB (match_predictions)
+- [x] Predicción con IA (OpenAI)
+- [x] Bulk random predictions
+- [x] Predicciones cargadas desde DB al abrir la app
 
-- [x] Crear `FEATURE.md`.
-- [x] Crear user story refinada en `SDD_PHASE_1_REFINED_USER_STORY.md`.
-- [x] Documentar reglas de puntuacion.
-- [x] Documentar Premio Perfecto Mundial.
-- [x] Documentar Apuesta Inicial y bonus opcional.
-- [x] Documentar cruces clasicos en pantalla inicial.
-- [x] Documentar integracion API-Football.
-- [ ] Crear artefactos SDD fase 2: stack detallado, modelo, endpoints, componentes, estructura, wireframe, ADR y DDD.
+### Partidos & Sync
+- [x] Cliente API-Football (SportsSyncService)
+- [x] Cliente worldcup26.ir gratuito (WorldCup26SyncService)
+- [x] Toggle fuente activa WC26_IR / API_FOOTBALL
+- [x] Sync: equipos, partidos, grupos, rondas, standings
+- [x] kickoff_at en UTC en DB
+- [x] Partidos ordenados por kickoff_at
+- [x] Panel admin de sync con botones por job
 
-## Fase 2 · Frontend Prototipo
+### Scoring & Premios
+- [x] Motor de scoring: WINNER +2, EXACT_RESULT +2, goles +1 por equipo
+- [x] Recálculo automático al guardar resultado o sincronizar
+- [x] Botón "Recalcular puntos" en admin
+- [x] Tabla de premios con porcentajes configurables
 
-- [x] Crear proyecto Vue + TypeScript + Vite en `frontend`.
-- [x] Instalar dependencias del front.
-- [x] Crear Dockerfile dev del frontend.
-- [x] Crear pantalla inicial visual mobile-first.
-- [x] Crear selector de porras.
-- [x] Crear resumen de bote, premio posible y estado de pleno.
-- [x] Crear navegacion inferior: Inicio, Partidos, Ranking, Premios, Admin.
-- [x] Crear vista de partidos mockeada.
-- [x] Crear ranking general mockeado.
-- [x] Crear ranking de apuesta inicial mockeado.
-- [x] Crear pantalla de premios mockeada.
-- [x] Crear panel admin mockeado.
-- [x] Crear esquema clasico de cruces con partidos/resultados.
-- [x] Crear panel admin de sincronizacion API-Football.
-- [x] Panel admin de sincronizacion worldcup26.ir con boton "Sync todo WC26".
-- [x] Toggle de fuente activa en panel Admin (worldcup26.ir / API-Football).
-- [x] Tarjeta de partido muestra fecha/hora real formateada en espanol.
-- [x] Partidos ordenados cronologicamente por kickoff_at.
-- [x] Partidos de demo (result_source=NONE) excluidos de la vista.
-- [x] Revisar ajustes visuales recientes y dejar el build del front en verde.
-- [~] Pulir textos con problemas de codificacion/acento en algunos strings.
-- [~] Revisar responsive completo en movil y escritorio.
-- [ ] Extraer componentes Vue reutilizables.
-- [x] Sustituir datos mock por servicios internos cuando exista backend.
+### Dashboard & UI
+- [x] Home redesign: banner posición/puntos/bote, próximo partido dinámico, pendientes, top 5 ranking
+- [x] Tab Partidos: grupos colapsables con clasificación en cabecera
+- [x] Clasificación de grupo calculada desde resultados (0 pts si no hay resultados)
+- [x] Tab Ranking: podio + tabla general + apuesta inicial
+- [x] Tab Premios: pleno, simulador, tabla de reparto
+- [x] Tab Admin: participantes, pagos, resultados, scoring, sync
+- [x] Topbar mobile-first (brand+user fila 1, pool-switch fila 2)
+- [x] Próximo partido sale de datos reales (no hardcodeado)
+- [x] Cambiar porra recarga dashboard completo
+- [x] Focus-trap + Escape en modales
+- [x] Animaciones WAAPI (hero, cards, contadores, barras)
 
-## Fase 3 · Backend Spring Boot
+### Base de datos & Migraciones
+- [x] Flyway configurado y activo
+- [x] V1: schema inicial completo
+- [x] V2: demo baseline
+- [x] V3: prize rule campeón
+- [x] V4: password hash
+- [x] V5: fix country_code selecciones británicas (England gb-eng, Scotland gb-sct)
 
-- [x] Crear carpeta `backend`.
-- [x] Crear `backend/README.md`.
-- [x] Crear `backend/API_FOOTBALL_INTEGRATION.md`.
-- [x] Incluir backend en `docker-compose.yml` como servicio preparado para Spring Boot.
-- [x] Scaffold Spring Boot.
-- [x] Configurar perfiles de entorno.
-- [x] Configurar MariaDB datasource.
-- [ ] Implementar autenticacion Google.
-- [ ] Implementar entidades y repositorios.
-- [ ] Implementar API de porras.
-- [ ] Implementar API de invitaciones.
-- [ ] Implementar API de pagos manuales.
-- [ ] Implementar API de predicciones.
-- [ ] Implementar API de resultados reales.
-- [ ] Implementar scoring.
-- [ ] Implementar calculo de premios.
-- [x] Implementar adaptador API-Football (FootballApiClient + SportsSyncService).
-- [x] Crear cliente API-Football base en backend.
-- [x] Implementar sync real: fixtures live, fixtures del dia, rondas, standings (upsert en DB, registro en sports_sync_runs).
-- [x] Implementar cliente worldcup26.ir (WorldCup26Client + WorldCup26SyncService): 48 equipos, 104 partidos, grupos.
-- [x] Implementar selector de fuente activa en memoria (SyncSourceConfig): WC26_IR | API_FOOTBALL.
-- [x] Endpoint POST /api/admin/sports-sync/source para cambiar fuente desde el frontend.
-- [x] Dashboard filtra partidos por fuente activa y los devuelve ordenados por kickoff_at.
-- [x] kickoff_at expuesto en MatchDto y formateado en la tarjeta de partido del frontend.
-- [ ] Implementar cache de fixtures/standings.
-- [x] Implementar endpoint de estado de sincronizacion.
-- [ ] Implementar auditoria.
+### DevOps
+- [x] docker-compose.yml (dev, volúmenes montados, hot reload)
+- [x] docker-compose.prod.yml (imágenes construidas)
+- [x] Dockerfiles frontend (dev + prod con nginx)
+- [x] Dockerfile backend (Maven multi-stage)
 
-## Fase 4 · Database MariaDB
+---
 
-- [x] Crear carpeta `database`.
-- [x] Crear `database/README.md`.
-- [x] Crear borrador de esquema relacional en `database/SCHEMA.md`.
-- [x] Decidir estrategia: migraciones primero, Hibernate `validate` en entornos compartidos.
-- [x] Crear `docker-compose.yml` con MariaDB.
-- [x] Crear `.env.example`.
-- [x] Crear `DOCKER.md`.
-- [x] Crear migraciones iniciales.
-- [x] Crear tablas de usuarios, porras, miembros e invitaciones.
-- [x] Crear tablas de pagos.
-- [x] Crear tablas de equipos, partidos, resultados y rondas.
-- [x] Crear tablas de prediccion inicial y prediccion viva.
-- [x] Crear tablas de puntuacion y premios.
-- [x] Crear tablas de sincronizacion API-Football.
-- [x] Crear seed de datos de ejemplo.
-- [x] Verificar Flyway en Docker cuando Docker Desktop este arrancado.
+## 🚨 Urgente — Pre-mundial (esta semana)
 
-## Fase 5 · Integracion Frontend-Backend
+### Cierre de predicciones
+- [!] Añadir `TZ=UTC` en docker-compose.yml y docker-compose.prod.yml (backend + frontend)
+- [!] Frontend: deshabilitar botón "Editar predicción" si `kickoff - 60min < Date.now()`
+- [!] Frontend: mostrar countdown "Cierra en Xh Ymin" en card cuando falten < 24h
+- [!] Frontend: banner de alerta en home si hay partidos que cierran hoy sin predecir
+- [!] Backend: validar en endpoint /predictions/match que kickoff - 60min > now() antes de guardar
 
-- [x] Definir contrato REST inicial.
-- [x] Crear cliente API en Vue.
-- [x] Conectar selector de porras.
-- [x] Conectar dashboard.
-- [x] Conectar partidos.
-- [x] Conectar ranking.
-- [x] Conectar premios.
-- [ ] Conectar admin de pagos.
-- [ ] Conectar admin de resultados.
-- [x] Conectar estado de API-Football.
+### Email de aviso (SendGrid)
+- [!] Crear cuenta SendGrid gratuita (100 emails/día)
+- [!] Añadir dependencia `spring-boot-starter-mail` al pom.xml
+- [!] Configurar SendGrid SMTP en application.yml
+- [!] Variables de entorno: SENDGRID_API_KEY, MAIL_FROM
+- [!] Servicio NotificationService con método sendMatchReminder()
+- [!] Job @Scheduled diario a las 9:00 UTC: buscar partidos de las próximas 24h, mandar email a quien no haya predicho
+- [!] Plantilla email: lista de partidos del día con hora de cierre y enlace directo a la app
+- [!] Añadir SENDGRID_API_KEY a docker-compose.prod.yml
 
-## Fase 6 · Tests y Verificacion
+---
 
-- [x] Verificar build del frontend con `npm run build`.
-- [x] Verificar tests del backend con `mvnw test`.
-- [x] Verificar sintaxis de Docker Compose con `docker compose config`.
-- [x] Verificar `docker compose up -d database backend`.
-- [ ] Tests unitarios de scoring.
-- [ ] Tests de resultado exacto, ganador/signo y goles.
-- [ ] Tests de apuesta inicial.
-- [ ] Tests de premio perfecto.
-- [ ] Tests de redistribucion de premios.
-- [ ] Tests de invitaciones.
-- [ ] Tests de pagos manuales.
-- [ ] Tests de bloqueo de predicciones.
-- [ ] Tests de adaptador API-Football con mocks.
-- [ ] E2E basico del flujo admin.
-- [ ] E2E basico del flujo participante.
+## 📋 Pendiente — Post-mundial o cuando haya tiempo
 
-## Fase 7 · Pendientes De Producto
+### Frontend
+- [ ] Responsive completo en móvil (cards de partidos, bracket, admin)
+- [ ] Extraer componentes Vue reutilizables (MatchCard, RankingRow, etc.)
+- [ ] Pulir textos con problemas de codificación/acentos
+- [ ] Web Push notifications (service worker) — baja prioridad
 
-- [ ] Decidir si el bonus de Apuesta Inicial suma siempre o es configurable por porra.
-- [ ] Decidir reparto definitivo cuando el pleno se extingue.
-- [ ] Decidir si usuarios no pagados pueden rellenar prediccion pero no optar a premio.
-- [ ] Decidir formato final de invitacion por email/enlace.
-- [ ] Decidir si el admin puede corregir resultados API-Football con override manual.
-- [ ] Decidir frecuencia real de polling segun plan contratado.
-- [x] Confirmar proveedor: API-Football directo o RapidAPI.
-- [x] Confirmar fuente gratuita alternativa: worldcup26.ir (sin key, datos reales 2026).
+### Backend
+- [ ] Cache de fixtures/standings en memoria
+- [ ] Auditoría de cambios de resultado
+- [ ] Override manual de resultado (admin) con registro de auditoría
+- [ ] Endpoint para ver historial de predicciones de un usuario
+
+### Producto
+- [ ] Decidir si usuarios no pagados pueden predecir pero no optar a premio
+- [ ] Decidir reparto definitivo cuando el pleno se extingue
+- [ ] Decidir si el bonus de Apuesta Inicial suma siempre o es configurable
+- [ ] Tests unitarios de scoring (WINNER, EXACT_RESULT, goles)
+- [ ] Tests E2E flujo participante y flujo admin
+
+---
+
+## 🗓 Orden de trabajo recomendado hoy/mañana
+
+1. `TZ=UTC` en composes → deploy
+2. Countdown + cierre client-side frontend → deploy
+3. Banner alerta home → deploy
+4. Backend validación 60min en endpoint predicciones → deploy
+5. Cuenta SendGrid + integración Spring Boot → deploy
+6. Job diario email aviso → deploy y probar

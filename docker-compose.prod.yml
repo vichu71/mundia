@@ -1,0 +1,75 @@
+name: mundia-prod
+
+services:
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: /api
+        VITE_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+    image: mundia-frontend:latest
+    container_name: mundia-frontend
+    ports:
+      - "5010:80"
+    restart: unless-stopped
+    depends_on:
+      - backend
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: mundia-backend:latest
+    container_name: mundia-backend
+    ports:
+      - "8086:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mariadb://mundia-database:3306/${MARIADB_DATABASE:-mundia}
+      SPRING_DATASOURCE_USERNAME: ${MARIADB_USER:-mundia}
+      SPRING_DATASOURCE_PASSWORD: ${MARIADB_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      API_FOOTBALL_KEY: ${API_FOOTBALL_KEY:-}
+      API_FOOTBALL_MODE: ${API_FOOTBALL_MODE:-direct}
+      API_FOOTBALL_SEASON: ${API_FOOTBALL_SEASON:-2026}
+      API_FOOTBALL_LEAGUE: ${API_FOOTBALL_LEAGUE:-1}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      TZ: UTC
+      MUNDIA_ACCESS_CODE_ENABLED: ${MUNDIA_ACCESS_CODE_ENABLED:-false}
+      MUNDIA_ACCESS_CODE: ${MUNDIA_ACCESS_CODE:-}
+      SPRING_MAIL_HOST: ${SPRING_MAIL_HOST:-smtp.gmail.com}
+      SPRING_MAIL_PORT: ${SPRING_MAIL_PORT:-587}
+      SPRING_MAIL_USERNAME: ${SPRING_MAIL_USERNAME:-}
+      SPRING_MAIL_PASSWORD: ${SPRING_MAIL_PASSWORD:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+      MAIL_ENABLED: ${MAIL_ENABLED:-false}
+      APP_URL: ${APP_URL:-https://mundial.vicai.es}
+    restart: unless-stopped
+    depends_on:
+      database:
+        condition: service_healthy
+
+  database:
+    image: mariadb:11.4
+    container_name: mundia-database
+    ports:
+      - "3310:3306"
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD}
+      MARIADB_DATABASE: ${MARIADB_DATABASE:-mundia}
+      MARIADB_USER: ${MARIADB_USER:-mundia}
+      MARIADB_PASSWORD: ${MARIADB_PASSWORD}
+    volumes:
+      - mariadb_prod_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  mariadb_prod_data:

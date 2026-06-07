@@ -51,7 +51,7 @@ public class WorldCup26SyncService {
             int count = 0;
             for (JsonNode t : root.path("teams")) {
                 String name   = t.path("name_en").asText("Unknown");
-                String iso2   = t.path("iso2").asText("un").toLowerCase();
+                String iso2   = normalizeIso2(name, t.path("iso2").asText("un").toLowerCase());
                 String wc26Id = t.path("id").asText();
                 // use negative IDs to avoid collision with API-Football IDs
                 long extId = -(Long.parseLong(wc26Id));
@@ -253,6 +253,16 @@ public class WorldCup26SyncService {
             log.warn("Cannot parse kickoff date: {}", localDate);
             return null;
         }
+    }
+
+    private static String normalizeIso2(String teamName, String iso2) {
+        return switch (teamName.toLowerCase()) {
+            case "england"       -> "gb-eng";
+            case "scotland"      -> "gb-sct";
+            case "wales"         -> "gb-wls";
+            case "northern ireland" -> "gb-nir";
+            default              -> iso2;
+        };
     }
 
     private void recordRun(String syncType, String result, Instant start, String error) {

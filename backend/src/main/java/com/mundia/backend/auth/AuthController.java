@@ -1,5 +1,6 @@
 package com.mundia.backend.auth;
 
+import com.mundia.backend.notification.NotificationService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpStatus;
@@ -16,44 +17,72 @@ import java.util.Map;
 @RequestMapping("/api/auth")
 public class AuthController {
 
-    record GoogleLoginRequest(String credential) {}
-    record EmailLoginRequest(String email, String password) {}
-    record RegisterRequest(String email, String password, String displayName, String inviteCode) {}
+    record GoogleLoginRequest(String credential, String accessCode) {}
+    record EmailLoginRequest(String email, String password, String accessCode) {}
+    record RegisterRequest(String email, String password, String displayName, String inviteCode, String accessCode) {}
     record AuthResponse(String token, String name, String email, String avatarUrl) {}
     record GoogleTokenInfo(String sub, String email, String name, String picture) {}
 
     private final JwtService jwtService;
     private final JdbcTemplate jdbc;
     private final PasswordEncoder passwordEncoder;
+    private final NotificationService notifications;
     private final String googleClientId;
+    private final boolean accessCodeEnabled;
+    private final String accessCodeValue;
     private final RestClient restClient = RestClient.create();
 
     public AuthController(
             JwtService jwtService,
             JdbcTemplate jdbc,
             PasswordEncoder passwordEncoder,
-            @Value("${mundia.google.client-id}") String googleClientId
+            NotificationService notifications,
+            @Value("${mundia.google.client-id}") String googleClientId,
+            @Value("${mundia.access-code.enabled:false}") boolean accessCodeEnabled,
+            @Value("${mundia.access-code.value:}") String accessCodeValue
     ) {
         this.jwtService = jwtService;
         this.jdbc = jdbc;
         this.passwordEncoder = passwordEncoder;
+        this.notifications = notifications;
         this.googleClientId = googleClientId;
+        this.accessCodeEnabled = accessCodeEnabled;
+        this.accessCodeValue = accessCodeValue;
+    }
+
+    private void checkAccessCode(String provided) {
+        if (!accessCodeEnabled) return;
+        if (accessCodeValue.isBlank() || !accessCodeValue.equals(provided)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Código de acceso incorrecto");
+        }
     }
 
     // ─── Google OAuth ─────────────────────────────────────────────────────────
 
     @PostMapping("/google")
     public AuthResponse googleLogin(@RequestBody GoogleLoginRequest req) {
+        checkAccessCode(req.accessCode());
         GoogleTokenInfo info = verifyGoogleToken(req.credential());
+        boolean isNew = isNewGoogleUser(info);
         long userId = upsertGoogleUser(info);
+        if (isNew) notifications.sendWelcome(info.email(), info.name());
         String token = jwtService.createToken(userId, info.email(), info.name());
         return new AuthResponse(token, info.name(), info.email(), info.picture());
+    }
+
+    private boolean isNewGoogleUser(GoogleTokenInfo info) {
+        List<Long> bySub   = jdbc.query("SELECT id FROM users WHERE google_sub = ?",
+                (rs, i) -> rs.getLong("id"), info.sub());
+        List<Long> byEmail = jdbc.query("SELECT id FROM users WHERE email = ?",
+                (rs, i) -> rs.getLong("id"), info.email());
+        return bySub.isEmpty() && byEmail.isEmpty();
     }
 
     // ─── Email + Contraseña ───────────────────────────────────────────────────
 
     @PostMapping("/login")
     public AuthResponse emailLogin(@RequestBody EmailLoginRequest req) {
+        checkAccessCode(req.accessCode());
         if (req.email() == null || req.password() == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Email y contraseña requeridos");
         }
@@ -86,6 +115,7 @@ public class AuthController {
 
     @PostMapping("/register")
     public AuthResponse register(@RequestBody RegisterRequest req) {
+        checkAccessCode(req.accessCode());
         if (req.email() == null || req.email().isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "El email es obligatorio");
         }
@@ -118,6 +148,7 @@ public class AuthController {
         }
 
         String token = jwtService.createToken(userId, email, req.displayName().trim());
+        notifications.sendWelcome(email, req.displayName().trim());
         return new AuthResponse(token, req.displayName().trim(), email, null);
     }
 

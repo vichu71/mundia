@@ -37,6 +37,14 @@ services:
       API_FOOTBALL_SEASON: ${API_FOOTBALL_SEASON:-2026}
       API_FOOTBALL_LEAGUE: ${API_FOOTBALL_LEAGUE:-1}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      TZ: UTC
+      SPRING_MAIL_HOST: ${SPRING_MAIL_HOST:-smtp.gmail.com}
+      SPRING_MAIL_PORT: ${SPRING_MAIL_PORT:-587}
+      SPRING_MAIL_USERNAME: ${SPRING_MAIL_USERNAME:-}
+      SPRING_MAIL_PASSWORD: ${SPRING_MAIL_PASSWORD:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+      MAIL_ENABLED: ${MAIL_ENABLED:-false}
+      APP_URL: ${APP_URL:-http://localhost:5173}
     volumes:
       - ./backend:/app
       - backend_m2:/root/.m2

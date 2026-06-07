@@ -12,6 +12,14 @@ spring:
     hibernate:
       ddl-auto: validate
     open-in-view: false
+  mail:
+    host: ${SPRING_MAIL_HOST:smtp.gmail.com}
+    port: ${SPRING_MAIL_PORT:587}
+    username: ${SPRING_MAIL_USERNAME:}
+    password: ${SPRING_MAIL_PASSWORD:}
+    properties:
+      mail.smtp.auth: true
+      mail.smtp.starttls.enable: true
 
 server:
   port: ${SERVER_PORT:8080}
@@ -30,6 +38,9 @@ mundia:
     secret: ${JWT_SECRET:mundia-dev-jwt-secret-please-change-me-ok}
   google:
     client-id: ${GOOGLE_CLIENT_ID:}
+  access-code:
+    enabled: ${MUNDIA_ACCESS_CODE_ENABLED:false}
+    value: ${MUNDIA_ACCESS_CODE:}
   football-api:
     mode: ${API_FOOTBALL_MODE:direct}
     base-url: ${API_FOOTBALL_BASE_URL:https://v3.football.api-sports.io}
@@ -38,3 +49,7 @@ mundia:
     league: ${API_FOOTBALL_LEAGUE:1}
     season: ${API_FOOTBALL_SEASON:2026}
     live-polling-seconds: ${API_FOOTBALL_LIVE_POLLING_SECONDS:30}
+  mail:
+    from: ${MAIL_FROM:mundia@mundial.vicai.es}
+    app-url: ${APP_URL:https://mundial.vicai.es}
+    enabled: ${MAIL_ENABLED:false}

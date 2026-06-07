@@ -10,7 +10,8 @@ public record DashboardResponse(
         List<PrizeRowDto> prizeRows,
         List<BracketRoundDto> bracketRounds,
         List<PendingPaymentDto> pendingPayments,
-        List<RecommendationDto> recommendations
+        List<RecommendationDto> recommendations,
+        List<GroupStandingDto> groupStandings
 ) {
     public record PoolDto(
             long id,
@@ -38,7 +39,9 @@ public record DashboardResponse(
             String statusType,
             String note,
             String kickoff,
-            String source
+            String source,
+            String roundName,
+            String stage
     ) {
     }
 
@@ -94,5 +97,21 @@ public record DashboardResponse(
     }
 
     public record PendingPaymentDto(long id, String name) {
+    }
+
+    public record GroupStandingDto(String roundName, List<TeamStandingDto> teams) {
+    }
+
+    public record TeamStandingDto(
+            String name,
+            String flag,
+            int played,
+            int won,
+            int drawn,
+            int lost,
+            int gf,
+            int ga,
+            int points
+    ) {
     }
 }

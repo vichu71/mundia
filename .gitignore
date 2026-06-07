@@ -9,3 +9,7 @@
 .vscode/
 
 *.log
+
+# Docker/image export artifacts
+*.tar
+.tmp-*.tar*

@@ -2,6 +2,7 @@ package com.mundia.backend.dashboard;
 
 import static com.mundia.backend.dashboard.DashboardResponse.BracketMatchDto;
 import static com.mundia.backend.dashboard.DashboardResponse.BracketRoundDto;
+import static com.mundia.backend.dashboard.DashboardResponse.GroupStandingDto;
 import static com.mundia.backend.dashboard.DashboardResponse.InitialRankingDto;
 import static com.mundia.backend.dashboard.DashboardResponse.MatchDto;
 import static com.mundia.backend.dashboard.DashboardResponse.PendingPaymentDto;
@@ -9,6 +10,7 @@ import static com.mundia.backend.dashboard.DashboardResponse.PoolDto;
 import static com.mundia.backend.dashboard.DashboardResponse.PrizeRowDto;
 import static com.mundia.backend.dashboard.DashboardResponse.RankingDto;
 import static com.mundia.backend.dashboard.DashboardResponse.RecommendationDto;
+import static com.mundia.backend.dashboard.DashboardResponse.TeamStandingDto;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -32,7 +34,6 @@ public class DashboardService {
     }
 
     public DashboardResponse getDashboard(long userId, long poolId) {
-        // Verify user is a member of this pool
         List<String> roles = jdbcTemplate.query(
                 "SELECT role FROM pool_members WHERE pool_id = ? AND user_id = ?",
                 (rs, i) -> rs.getString("role"), poolId, userId);
@@ -48,11 +49,12 @@ public class DashboardService {
                 findPools(userId),
                 matches,
                 ranking,
-                findInitialRanking(ranking),
+                findInitialRanking(poolId),
                 findPrizeRows(poolId),
                 findBracketRounds(userId, poolId),
                 findPendingPayments(poolId),
-                recommendations(matches)
+                recommendations(matches),
+                findGroupStandings()
         );
     }
 
@@ -91,7 +93,6 @@ public class DashboardService {
         Source active = sourceConfig.getActive();
         String sourceFilter = active == Source.API_FOOTBALL ? "API_FOOTBALL" : "WC26_IR";
 
-        // Load user's predictions into a map matchId → "hg - ag"
         java.util.Map<Long, String> userPreds = new java.util.HashMap<>();
         jdbcTemplate.query("""
                 SELECT mp.match_id, mp.home_goals, mp.away_goals
@@ -118,13 +119,20 @@ public class DashboardService {
                   m.home_goals,
                   m.away_goals,
                   m.result_source,
-                  m.kickoff_at
+                  m.kickoff_at,
+                  r.name round_name,
+                  r.stage
                 FROM matches m
                 JOIN rounds r ON r.id = m.round_id
                 JOIN teams ht ON ht.id = m.home_team_id
                 JOIN teams at ON at.id = m.away_team_id
                 WHERE m.result_source = ?
-                ORDER BY m.kickoff_at IS NULL, m.kickoff_at, m.id
+                ORDER BY
+                  CASE r.stage WHEN 'GROUP_STAGE' THEN 0 ELSE 1 END,
+                  r.sort_order,
+                  m.kickoff_at IS NULL,
+                  m.kickoff_at,
+                  m.id
                 """, (rs, rowNum) -> {
             long matchId  = rs.getLong("id");
             Integer homeGoals = nullableInt(rs, "home_goals");
@@ -147,7 +155,9 @@ public class DashboardService {
                     matchStatusType(status),
                     matchNote(rs.getString("result_source"), homeGoals, awayGoals),
                     kickoff,
-                    rs.getString("result_source")
+                    rs.getString("result_source"),
+                    rs.getString("round_name"),
+                    rs.getString("stage")
             );
         }, sourceFilter);
     }
@@ -194,18 +204,29 @@ public class DashboardService {
         ), poolId);
     }
 
-    private List<InitialRankingDto> findInitialRanking(List<RankingDto> ranking) {
-        return ranking.stream()
-                .limit(3)
-                .map(row -> new InitialRankingDto(
-                        row.pos(),
-                        row.name(),
-                        0,
-                        0,
-                        0,
-                        "Sin bonus todavia"
-                ))
-                .toList();
+    private List<InitialRankingDto> findInitialRanking(long poolId) {
+        return jdbcTemplate.query("""
+                SELECT
+                  ROW_NUMBER() OVER (ORDER BY SUM(sb.points) DESC, u.display_name ASC) pos,
+                  u.display_name name,
+                  COALESCE(SUM(sb.points), 0) points,
+                  COALESCE(SUM(CASE WHEN sb.category = 'EXACT_RESULT' THEN 1 ELSE 0 END), 0) exact_count,
+                  COALESCE(SUM(CASE WHEN sb.category = 'WINNER'       THEN 1 ELSE 0 END), 0) winner_count
+                FROM pool_members pm
+                JOIN users u ON u.id = pm.user_id
+                LEFT JOIN prediction_sets ps ON ps.pool_member_id = pm.id AND ps.type = 'INITIAL'
+                LEFT JOIN score_breakdowns sb ON sb.prediction_set_id = ps.id
+                WHERE pm.pool_id = ? AND pm.role = 'PLAYER'
+                GROUP BY pm.id, u.display_name
+                ORDER BY points DESC, u.display_name ASC
+                """, (rs, rowNum) -> new InitialRankingDto(
+                rs.getInt("pos"),
+                rs.getString("name"),
+                rs.getInt("points"),
+                rs.getInt("exact_count"),
+                rs.getInt("winner_count"),
+                rs.getInt("points") == 0 ? "Sin apuesta inicial" : rs.getInt("points") + " pts"
+        ), poolId);
     }
 
     private List<PrizeRowDto> findPrizeRows(long poolId) {
@@ -218,28 +239,58 @@ public class DashboardService {
         int pot = centsToEuros(potCents != null ? potCents : 0);
 
         return jdbcTemplate.query("""
-                SELECT category, percentage_when_perfect_alive pct
+                SELECT
+                  pr.category,
+                  pr.percentage_when_perfect_alive pct,
+                  COALESCE(SUM(pp.current_amount_cents), 0) awarded_cents,
+                  COUNT(DISTINCT pp.pool_member_id) winners,
+                  GROUP_CONCAT(DISTINCT u.display_name ORDER BY u.display_name SEPARATOR ', ') winner_names,
+                  MAX(pp.status) pp_status
                 FROM prize_rules pr
+                LEFT JOIN prize_projections pp ON pp.category = pr.category
+                  AND pp.current_amount_cents > 0
+                  AND EXISTS (
+                    SELECT 1 FROM pool_members pm2
+                    WHERE pm2.id = pp.pool_member_id AND pm2.pool_id = ?
+                  )
+                LEFT JOIN pool_members pm ON pm.id = pp.pool_member_id
+                LEFT JOIN users u ON u.id = pm.user_id
                 WHERE pr.pool_id = ? AND pr.enabled = TRUE
-                ORDER BY FIELD(category, 'PERFECT_WINNERS', 'GENERAL', 'INITIAL_BET', 'EXACT_RESULTS', 'WINNERS', 'CHAMPION')
+                GROUP BY pr.category, pr.percentage_when_perfect_alive
+                ORDER BY FIELD(pr.category, 'PERFECT_WINNERS', 'GENERAL', 'INITIAL_BET', 'EXACT_RESULTS', 'WINNERS', 'CHAMPION')
                 """, (rs, rowNum) -> {
-            int pct = rs.getBigDecimal("pct").intValue();
+            int pct        = rs.getBigDecimal("pct").intValue();
+            int awarded    = centsToEuros(rs.getInt("awarded_cents"));
+            int winners    = rs.getInt("winners");
+            String names   = rs.getString("winner_names");
+            String ppStatus = rs.getString("pp_status");
+
+            String state;
+            String stateType;
+            if ("EXTINCT".equals(ppStatus)) {
+                state = "Extinto"; stateType = "closed";
+            } else if (winners > 0 && names != null) {
+                state = names; stateType = "active";
+            } else {
+                state = "Pendiente"; stateType = "pending";
+            }
+
             return new PrizeRowDto(
                     prizeLabel(rs.getString("category")),
-                    Math.round(pot * pct / 100.0f),
-                    "Pendiente",
-                    "pending",
-                    0,
+                    awarded > 0 ? awarded : Math.round(pot * pct / 100.0f),
+                    state,
+                    stateType,
+                    winners,
                     pct
             );
-        }, poolId);
+        }, poolId, poolId);
     }
 
     private List<BracketRoundDto> findBracketRounds(long userId, long poolId) {
         Source active = sourceConfig.getActive();
         String sourceFilter = active == Source.API_FOOTBALL ? "API_FOOTBALL" : "WC26_IR";
+        String sourceIn = "('" + sourceFilter + "', 'SIM')";
 
-        // Load user predictions for all matches in this pool
         java.util.Map<Long, String> userPreds = new java.util.HashMap<>();
         jdbcTemplate.query("""
                 SELECT mp.match_id, mp.home_goals, mp.away_goals
@@ -268,7 +319,7 @@ public class DashboardService {
                   m.away_goals,
                   m.status
                 FROM rounds r
-                JOIN matches m ON m.round_id = r.id AND m.result_source = ?
+                JOIN matches m ON m.round_id = r.id AND m.result_source IN (?, 'SIM')
                 LEFT JOIN teams ht ON ht.id = m.home_team_id
                 LEFT JOIN teams at ON at.id = m.away_team_id
                 ORDER BY
@@ -310,12 +361,105 @@ public class DashboardService {
                             pred,
                             real,
                             winner,
-                            "CLOSED".equals(row.status())
+                            "CLOSED".equals(row.status()) || "FINISHED".equals(row.status())
                     ));
         }
 
         return rounds.entrySet().stream()
                 .map(entry -> new BracketRoundDto(entry.getKey(), entry.getValue()))
+                .toList();
+    }
+
+    private List<GroupStandingDto> findGroupStandings() {
+        Source active = sourceConfig.getActive();
+        String src = active == Source.API_FOOTBALL ? "API_FOOTBALL" : "WC26_IR";
+
+        List<Object[]> rows = jdbcTemplate.query("""
+                SELECT
+                  all_teams.round_name,
+                  all_teams.sort_order,
+                  all_teams.team_name,
+                  all_teams.flag,
+                  COALESCE(stats.played, 0) played,
+                  COALESCE(stats.won,    0) won,
+                  COALESCE(stats.drawn,  0) drawn,
+                  COALESCE(stats.lost,   0) lost,
+                  COALESCE(stats.gf,     0) gf,
+                  COALESCE(stats.ga,     0) ga,
+                  COALESCE(stats.pts,    0) pts
+                FROM (
+                  SELECT DISTINCT r.name round_name, r.sort_order, ht.id team_id, ht.name team_name, ht.country_code flag
+                  FROM rounds r
+                  JOIN matches m  ON m.round_id = r.id AND m.result_source = ?
+                  JOIN teams ht   ON ht.id = m.home_team_id
+                  WHERE r.stage = 'GROUP_STAGE'
+                  UNION
+                  SELECT DISTINCT r.name, r.sort_order, at.id, at.name, at.country_code
+                  FROM rounds r
+                  JOIN matches m  ON m.round_id = r.id AND m.result_source = ?
+                  JOIN teams at   ON at.id = m.away_team_id
+                  WHERE r.stage = 'GROUP_STAGE'
+                ) all_teams
+                LEFT JOIN (
+                  SELECT team_id, round_name,
+                    SUM(played) played, SUM(won) won, SUM(drawn) drawn,
+                    SUM(lost) lost, SUM(gf) gf, SUM(ga) ga, SUM(pts) pts
+                  FROM (
+                    SELECT r.name round_name, ht.id team_id,
+                      1 played,
+                      CASE WHEN m.home_goals > m.away_goals THEN 1 ELSE 0 END won,
+                      CASE WHEN m.home_goals = m.away_goals THEN 1 ELSE 0 END drawn,
+                      CASE WHEN m.home_goals < m.away_goals THEN 1 ELSE 0 END lost,
+                      m.home_goals gf, m.away_goals ga,
+                      CASE WHEN m.home_goals > m.away_goals THEN 3
+                           WHEN m.home_goals = m.away_goals THEN 1 ELSE 0 END pts
+                    FROM matches m
+                    JOIN rounds r ON r.id = m.round_id AND r.stage = 'GROUP_STAGE'
+                    JOIN teams ht ON ht.id = m.home_team_id
+                    WHERE m.result_source = ? AND m.home_goals IS NOT NULL AND m.away_goals IS NOT NULL
+                    UNION ALL
+                    SELECT r.name, at.id,
+                      1,
+                      CASE WHEN m.away_goals > m.home_goals THEN 1 ELSE 0 END,
+                      CASE WHEN m.home_goals = m.away_goals THEN 1 ELSE 0 END,
+                      CASE WHEN m.away_goals < m.home_goals THEN 1 ELSE 0 END,
+                      m.away_goals, m.home_goals,
+                      CASE WHEN m.away_goals > m.home_goals THEN 3
+                           WHEN m.home_goals = m.away_goals THEN 1 ELSE 0 END
+                    FROM matches m
+                    JOIN rounds r ON r.id = m.round_id AND r.stage = 'GROUP_STAGE'
+                    JOIN teams at ON at.id = m.away_team_id
+                    WHERE m.result_source = ? AND m.home_goals IS NOT NULL AND m.away_goals IS NOT NULL
+                  ) ms
+                  GROUP BY team_id, round_name
+                ) stats ON stats.team_id = all_teams.team_id AND stats.round_name = all_teams.round_name
+                ORDER BY all_teams.sort_order, pts DESC, (COALESCE(stats.gf,0) - COALESCE(stats.ga,0)) DESC, all_teams.team_name
+                """,
+                (rs, i) -> new Object[]{
+                        rs.getString("round_name"),
+                        rs.getString("team_name"),
+                        rs.getString("flag"),
+                        rs.getInt("played"),
+                        rs.getInt("won"),
+                        rs.getInt("drawn"),
+                        rs.getInt("lost"),
+                        rs.getInt("gf"),
+                        rs.getInt("ga"),
+                        rs.getInt("pts")
+                }, src, src, src, src);
+
+        Map<String, List<TeamStandingDto>> byRound = new LinkedHashMap<>();
+        for (Object[] row : rows) {
+            byRound.computeIfAbsent((String) row[0], k -> new ArrayList<>())
+                    .add(new TeamStandingDto(
+                            (String) row[1], (String) row[2],
+                            (int) row[3], (int) row[4], (int) row[5],
+                            (int) row[6], (int) row[7], (int) row[8], (int) row[9]
+                    ));
+        }
+
+        return byRound.entrySet().stream()
+                .map(e -> new GroupStandingDto(e.getKey(), e.getValue()))
                 .toList();
     }
 
@@ -433,3 +577,4 @@ public class DashboardService {
     ) {
     }
 }
+
