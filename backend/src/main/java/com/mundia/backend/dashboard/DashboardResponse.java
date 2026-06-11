@@ -43,7 +43,9 @@ public record DashboardResponse(
             String kickoff,
             String source,
             String roundName,
-            String stage
+            String stage,
+            Integer elapsed,
+            String statusShort
     ) {
     }
 

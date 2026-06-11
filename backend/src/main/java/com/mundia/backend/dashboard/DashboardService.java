@@ -143,7 +143,9 @@ public class DashboardService {
                   m.result_source,
                   m.kickoff_at,
                   r.name round_name,
-                  r.stage
+                  r.stage,
+                  m.elapsed,
+                  m.status_short
                 FROM matches m
                 JOIN rounds r ON r.id = m.round_id
                 JOIN teams ht ON ht.id = m.home_team_id
@@ -195,7 +197,9 @@ public class DashboardService {
                     kickoff,
                     rs.getString("result_source"),
                     rs.getString("round_name"),
-                    rs.getString("stage")
+                    rs.getString("stage"),
+                    nullableInt(rs, "elapsed"),
+                    rs.getString("status_short")
             );
         }, sourceFilter);
     }

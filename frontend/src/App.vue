@@ -32,7 +32,7 @@ import {
 type TabId = 'home' | 'matches' | 'bracket' | 'ranking' | 'prizes' | 'admin'
 
 type Pool = { id: number; name: string; code: string; status: string; statusType: string; userRole: string; members: number; paid: number; pot: number }
-type Match = { id: number; home: string; away: string; homeFl: string; awayFl: string; pred: string; real: string; points: number | null; scoreType: string | null; scoreNote: string | null; status: string; statusType: string; note: string; kickoff: string | null; source: string | null; roundName: string | null; stage: string | null }
+type Match = { id: number; home: string; away: string; homeFl: string; awayFl: string; pred: string; real: string; points: number | null; scoreType: string | null; scoreNote: string | null; status: string; statusType: string; note: string; kickoff: string | null; source: string | null; roundName: string | null; stage: string | null; elapsed: number | null; statusShort: string | null }
 type RankingRow = { pos: number; memberId: number; name: string; avatar: string; points: number; exact: number; winners: number; prize: number; delta: string; alive: boolean }
 type InitialRankingRow = { pos: number; name: string; points: number; exact: number; winners: number; bonus: string }
 type PrizeRow = { label: string; amount: number; state: string; stateType: string; contenders: number; pct: number }
@@ -857,10 +857,10 @@ async function saveBracketPreds() {
 }
 
 const matches = ref<Match[]>([
-  { id: 1, home: 'Espana',    away: 'Alemania',  homeFl: 'es',     awayFl: 'de',     pred: '0 - 0', real: 'Pend.', points: null, scoreType: null, scoreNote: null, status: 'Abierto', statusType: 'open', note: 'Partido de prueba.', kickoff: null, source: null, roundName: 'Group A', stage: 'GROUP_STAGE' },
-  { id: 2, home: 'Brasil',    away: 'Portugal',  homeFl: 'br',     awayFl: 'pt',     pred: '0 - 0', real: 'Pend.', points: null, scoreType: null, scoreNote: null, status: 'Abierto', statusType: 'open', note: 'Pendiente de sincronizar.', kickoff: null, source: null, roundName: 'Group A', stage: 'GROUP_STAGE' },
-  { id: 3, home: 'Argentina', away: 'Francia',   homeFl: 'ar',     awayFl: 'fr',     pred: '0 - 0', real: 'Pend.', points: null, scoreType: null, scoreNote: null, status: 'Abierto', statusType: 'open', note: 'Editable.', kickoff: null, source: null, roundName: 'Group B', stage: 'GROUP_STAGE' },
-  { id: 4, home: 'Inglaterra',away: 'Italia',    homeFl: 'gb-eng', awayFl: 'it',     pred: '0 - 0', real: 'Pend.', points: null, scoreType: null, scoreNote: null, status: 'Abierto', statusType: 'open', note: 'Sin puntos todavia.', kickoff: null, source: null, roundName: 'Group B', stage: 'GROUP_STAGE' },
+  { id: 1, home: 'Espana',    away: 'Alemania',  homeFl: 'es',     awayFl: 'de',     pred: '0 - 0', real: 'Pend.', points: null, scoreType: null, scoreNote: null, status: 'Abierto', statusType: 'open', note: 'Partido de prueba.', kickoff: null, source: null, roundName: 'Group A', stage: 'GROUP_STAGE', elapsed: null, statusShort: null },
+  { id: 2, home: 'Brasil',    away: 'Portugal',  homeFl: 'br',     awayFl: 'pt',     pred: '0 - 0', real: 'Pend.', points: null, scoreType: null, scoreNote: null, status: 'Abierto', statusType: 'open', note: 'Pendiente de sincronizar.', kickoff: null, source: null, roundName: 'Group A', stage: 'GROUP_STAGE', elapsed: null, statusShort: null },
+  { id: 3, home: 'Argentina', away: 'Francia',   homeFl: 'ar',     awayFl: 'fr',     pred: '0 - 0', real: 'Pend.', points: null, scoreType: null, scoreNote: null, status: 'Abierto', statusType: 'open', note: 'Editable.', kickoff: null, source: null, roundName: 'Group B', stage: 'GROUP_STAGE', elapsed: null, statusShort: null },
+  { id: 4, home: 'Inglaterra',away: 'Italia',    homeFl: 'gb-eng', awayFl: 'it',     pred: '0 - 0', real: 'Pend.', points: null, scoreType: null, scoreNote: null, status: 'Abierto', statusType: 'open', note: 'Sin puntos todavia.', kickoff: null, source: null, roundName: 'Group B', stage: 'GROUP_STAGE', elapsed: null, statusShort: null },
 ])
 
 const ranking = ref<RankingRow[]>([
@@ -1796,6 +1796,28 @@ onMounted(() => {
 
 onUnmounted(() => { if (_versionTimer) clearInterval(_versionTimer) })
 
+// ── Live-match polling ──────────────────────────────────────────────────────
+let _liveTimer: ReturnType<typeof setInterval> | null = null
+
+const hasLiveMatches = computed(() => matches.value.some(m => m.statusType === 'warning'))
+
+function startLivePolling() {
+  if (_liveTimer) return
+  _liveTimer = setInterval(async () => {
+    if (!authToken.value || !activePoolId.value) return
+    if (document.visibilityState !== 'visible') return
+    await loadDashboard()
+    if (!hasLiveMatches.value) stopLivePolling()
+  }, 30_000)
+}
+
+function stopLivePolling() {
+  if (_liveTimer) { clearInterval(_liveTimer); _liveTimer = null }
+}
+
+watch(hasLiveMatches, (live) => { if (live) startLivePolling(); else stopLivePolling() })
+onUnmounted(() => stopLivePolling())
+
 function cutoffMs(iso: string | null): number | null {
   if (!iso) return null
   return new Date(iso).getTime() - CUTOFF_MINUTES * 60_000
@@ -1822,6 +1844,12 @@ function fmtKickoff(iso: string | null): string {
   if (!iso) return 'Por confirmar'
   const d = new Date(iso)
   return d.toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Madrid' })
+}
+
+function fmtElapsed(m: Match): string {
+  if (m.statusShort === 'HT') return 'Descanso'
+  if (m.elapsed != null)      return `${m.elapsed}'`
+  return m.statusShort ?? ''
 }
 
 async function setActiveSource(source: 'WC26_IR' | 'API_FOOTBALL') {
@@ -2141,7 +2169,11 @@ watch(activePool, async () => {
               </div>
               <div class="vs-block">
                 <span class="vs-label">VS</span>
-                <span class="match-time">{{ fmtKickoff(nextMatch.kickoff) }}</span>
+                <span v-if="nextMatch.statusType === 'warning'" class="match-live-time match-live-time--center">
+                  <span class="pulse-dot" aria-hidden="true"></span>
+                  {{ fmtElapsed(nextMatch) }}
+                </span>
+                <span v-else class="match-time">{{ fmtKickoff(nextMatch.kickoff) }}</span>
               </div>
               <div class="team-block">
                 <span :class="`fi fi-${displayTeams(nextMatch).awayFl} flag-xl`"></span>
@@ -2294,7 +2326,11 @@ watch(activePool, async () => {
             <div class="panel__header">
               <Zap :size="16" />
               <h2>Próximo partido</h2>
-              <span class="match-kickoff" style="margin-left:auto">{{ fmtKickoff(nextMatch.kickoff) }}</span>
+              <span v-if="nextMatch.statusType === 'warning'" class="match-live-time" style="margin-left:auto">
+                <span class="pulse-dot" aria-hidden="true"></span>
+                {{ fmtElapsed(nextMatch) }}
+              </span>
+              <span v-else class="match-kickoff" style="margin-left:auto">{{ fmtKickoff(nextMatch.kickoff) }}</span>
             </div>
             <div class="home-match-duel">
               <div class="team-block">
@@ -2472,8 +2508,12 @@ watch(activePool, async () => {
                     <span :class="['badge', isPredictionClosed(m.kickoff) ? 'badge--closed' : `badge--${m.statusType}`]">
                       {{ isPredictionClosed(m.kickoff) ? 'Cerrado' : m.status }}
                     </span>
-                    <span class="match-kickoff">{{ fmtKickoff(m.kickoff) }}</span>
                     <strong v-if="m.points !== null" :class="['pts-badge', m.scoreNote && 'pts-badge--tip']" :data-tip="m.scoreNote ?? undefined">+{{ m.points }} pts</strong>
+                    <span v-if="m.statusType === 'warning'" class="match-live-time">
+                      <span class="pulse-dot" aria-hidden="true"></span>
+                      {{ fmtElapsed(m) }}
+                    </span>
+                    <span v-else class="match-kickoff">{{ fmtKickoff(m.kickoff) }}</span>
                   </div>
                   <div class="match-card__duel">
                     <div class="match-team">

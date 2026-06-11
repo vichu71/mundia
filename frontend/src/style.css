@@ -1079,6 +1079,18 @@ h3 { font-size: 0.88rem; font-weight: 700; color: var(--text); }
   font-variant-numeric: tabular-nums;
 }
 
+.match-live-time {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.67rem;
+  font-weight: 700;
+  color: #fda4af;
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+.match-live-time--center { margin-left: 0; }
+
 /* Match card score tinting (double-class for specificity over theme overrides) */
 
 /* Points badge tooltip */
