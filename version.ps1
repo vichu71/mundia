@@ -15,20 +15,23 @@ if ($Version -notmatch "^\d+\.\d+\.\d+$") {
 
 Write-Host "Aplicando version $Version..." -ForegroundColor Yellow
 
-$ROOT = $PSScriptRoot
-$POM  = Join-Path $ROOT "backend\pom.xml"
-$PKG  = Join-Path $ROOT "frontend\package.json"
+# Normalizar paths a Windows absoluto independientemente de como se invoque el script
+$ROOT = [System.IO.Path]::GetFullPath($PSScriptRoot)
+$POM  = [System.IO.Path]::Combine($ROOT, "backend", "pom.xml")
+$PKG  = [System.IO.Path]::Combine($ROOT, "frontend", "package.json")
+$NoBom = New-Object System.Text.UTF8Encoding $false
 
 # pom.xml — solo la version del proyecto (la que sigue a <artifactId>backend</artifactId>)
-$pom = Get-Content $POM -Raw
+$pom = [System.IO.File]::ReadAllText($POM, $NoBom)
 $pom = $pom -replace '(<artifactId>backend</artifactId>\s*<version>)\d+\.\d+\.\d+(</version>)', "`${1}$Version`${2}"
-$pom | Out-File $POM -Encoding utf8
+[System.IO.File]::WriteAllText($POM, $pom, $NoBom)
 Write-Host "  pom.xml actualizado" -ForegroundColor Green
 
 # package.json
-$pkg = Get-Content $PKG -Raw | ConvertFrom-Json
+$pkg = [System.IO.File]::ReadAllText($PKG, $NoBom) | ConvertFrom-Json
 $pkg.version = $Version
-$pkg | ConvertTo-Json -Depth 10 | Out-File $PKG -Encoding utf8
+$json = $pkg | ConvertTo-Json -Depth 10
+[System.IO.File]::WriteAllText($PKG, $json, $NoBom)
 Write-Host "  package.json actualizado" -ForegroundColor Green
 
 # git
