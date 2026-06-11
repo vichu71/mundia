@@ -5,6 +5,7 @@ import com.mundia.backend.scoring.ScoringService;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -34,10 +35,36 @@ public class AdminController {
         this.notifications = notifications;
     }
 
+    // ─── Auth helpers ─────────────────────────────────────────────────────────
+
+    private long userId(JwtAuthenticationToken auth) {
+        return Long.parseLong(auth.getToken().getSubject());
+    }
+
+    private void requirePoolAdmin(long userId, long poolId) {
+        String role = jdbc.query(
+                "SELECT role FROM pool_members WHERE pool_id = ? AND user_id = ?",
+                (rs, i) -> rs.getString("role"), poolId, userId)
+                .stream().findFirst().orElse("");
+        if (!"ADMIN".equals(role)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Solo el admin de la porra puede realizar esta acción");
+        }
+    }
+
+    private void requireAnyAdmin(long userId) {
+        Integer count = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM pool_members WHERE user_id = ? AND role = 'ADMIN'",
+                Integer.class, userId);
+        if (count == null || count == 0) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Solo los admins pueden realizar esta acción");
+        }
+    }
+
     // ─── Listar miembros ──────────────────────────────────────────────────────
 
     @GetMapping("/members/{poolId}")
-    public List<MemberDto> listMembers(@PathVariable long poolId) {
+    public List<MemberDto> listMembers(@PathVariable long poolId, JwtAuthenticationToken auth) {
+        requirePoolAdmin(userId(auth), poolId);
         return jdbc.query("""
                 SELECT
                   pm.id            member_id,
@@ -68,11 +95,19 @@ public class AdminController {
 
     @DeleteMapping("/members/{memberId}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void removeMember(@PathVariable long memberId) {
-        // Cascade: score_breakdowns, prize_projections, match_predictions,
-        //          bracket_predictions, prediction_sets, payments, pool_member
+    public void removeMember(@PathVariable long memberId, JwtAuthenticationToken auth) {
+        long poolId = jdbc.query(
+                "SELECT pool_id FROM pool_members WHERE id = ?",
+                (rs, i) -> rs.getLong("pool_id"), memberId)
+                .stream().findFirst().orElseThrow(
+                        () -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Member not found: " + memberId));
+        requirePoolAdmin(userId(auth), poolId);
+        // Cascade: score_breakdowns, prize_projections, champion_predictions,
+        //          match_predictions, bracket_predictions, prediction_sets,
+        //          payments, pool_member
         jdbc.update("DELETE FROM score_breakdowns WHERE pool_member_id = ?", memberId);
         jdbc.update("DELETE FROM prize_projections WHERE pool_member_id = ?", memberId);
+        jdbc.update("DELETE FROM champion_predictions WHERE pool_member_id = ?", memberId);
         jdbc.update("""
                 DELETE mp FROM match_predictions mp
                 JOIN prediction_sets ps ON ps.id = mp.prediction_set_id
@@ -94,7 +129,8 @@ public class AdminController {
     // ─── Recalcular scoring manualmente ──────────────────────────────────────
 
     @PostMapping("/scoring/recalculate")
-    public Map<String, Object> recalculateScoring() {
+    public Map<String, Object> recalculateScoring(JwtAuthenticationToken auth) {
+        requireAnyAdmin(userId(auth));
         int processed = scoringService.recalculateAll();
         return Map.of("processed", processed);
     }
@@ -103,16 +139,8 @@ public class AdminController {
 
     @DeleteMapping("/pools/{poolId}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void deletePool(@PathVariable long poolId,
-                           org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken auth) {
-        long userId = Long.parseLong(auth.getToken().getSubject());
-        String role = jdbc.query(
-                "SELECT role FROM pool_members WHERE pool_id = ? AND user_id = ?",
-                (rs, i) -> rs.getString("role"), poolId, userId)
-                .stream().findFirst().orElse("");
-        if (!"ADMIN".equals(role)) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Solo el admin puede eliminar la porra");
-        }
+    public void deletePool(@PathVariable long poolId, JwtAuthenticationToken auth) {
+        requirePoolAdmin(userId(auth), poolId);
         int rows = jdbc.update("UPDATE pools SET status = 'DELETED' WHERE id = ?", poolId);
         if (rows == 0) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Porra no encontrada: " + poolId);
@@ -123,7 +151,16 @@ public class AdminController {
 
     @PostMapping("/payments/{id}/confirm")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void confirmPayment(@PathVariable long id) {
+    public void confirmPayment(@PathVariable long id, JwtAuthenticationToken auth) {
+        long poolId = jdbc.query("""
+                SELECT pm.pool_id FROM payments p
+                JOIN pool_members pm ON pm.id = p.pool_member_id
+                WHERE p.id = ?
+                """,
+                (rs, i) -> rs.getLong("pool_id"), id)
+                .stream().findFirst().orElseThrow(
+                        () -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Payment not found: " + id));
+        requirePoolAdmin(userId(auth), poolId);
         int rows = jdbc.update("""
                 UPDATE payments SET status = 'CONFIRMED', confirmed_at = CURRENT_TIMESTAMP(6)
                 WHERE id = ? AND status = 'PENDING'
@@ -137,7 +174,9 @@ public class AdminController {
 
     @PostMapping("/matches/{id}/result")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void setMatchResult(@PathVariable long id, @RequestBody SetResultRequest req) {
+    public void setMatchResult(@PathVariable long id, @RequestBody SetResultRequest req,
+                               JwtAuthenticationToken auth) {
+        requireAnyAdmin(userId(auth));
         int rows = jdbc.update("""
                 UPDATE matches
                 SET home_goals = ?, away_goals = ?, status = 'CLOSED',
@@ -155,11 +194,12 @@ public class AdminController {
 
     @PostMapping("/members")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void addMember(@RequestBody AddMemberRequest req) {
+    public void addMember(@RequestBody AddMemberRequest req, JwtAuthenticationToken auth) {
         if (req.displayName() == null || req.displayName().isBlank() ||
             req.email() == null || req.email().isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "displayName and email required");
         }
+        requirePoolAdmin(userId(auth), req.poolId());
 
         // Obtener invite code de la porra para usarlo como contraseña inicial
         String inviteCode = jdbc.queryForObject(

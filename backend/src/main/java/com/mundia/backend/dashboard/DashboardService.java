@@ -66,7 +66,7 @@ public class DashboardService {
                   p.invite_code code,
                   p.status,
                   pm_user.role user_role,
-                  COUNT(CASE WHEN pm.role = 'PLAYER' THEN 1 END) members,
+                  COUNT(CASE WHEN pm.role IN ('PLAYER','ADMIN') THEN 1 END) members,
                   COUNT(CASE WHEN pay.status = 'CONFIRMED' THEN 1 END) paid,
                   COALESCE(SUM(CASE WHEN pay.status = 'CONFIRMED' THEN pay.amount_cents ELSE 0 END), 0) pot_cents
                 FROM pools p
@@ -126,7 +126,8 @@ public class DashboardService {
                 JOIN rounds r ON r.id = m.round_id
                 JOIN teams ht ON ht.id = m.home_team_id
                 JOIN teams at ON at.id = m.away_team_id
-                WHERE m.result_source = ?
+                WHERE (r.stage = 'GROUP_STAGE' AND m.result_source IN (?, 'SIM'))
+                   OR r.stage = 'KNOCKOUT'
                 ORDER BY
                   CASE r.stage WHEN 'GROUP_STAGE' THEN 0 ELSE 1 END,
                   r.sort_order,
@@ -176,12 +177,13 @@ public class DashboardService {
                 JOIN users u ON u.id = pm.user_id
                 LEFT JOIN (
                   SELECT
-                    pool_member_id,
-                    SUM(points) points,
-                    SUM(CASE WHEN category = 'EXACT_RESULT' AND points > 0 THEN 1 ELSE 0 END) exact,
-                    SUM(CASE WHEN category = 'WINNER' AND points > 0 THEN 1 ELSE 0 END) winners
-                  FROM score_breakdowns
-                  GROUP BY pool_member_id
+                    sb.pool_member_id,
+                    SUM(sb.points) points,
+                    SUM(CASE WHEN sb.category = 'EXACT_RESULT' AND sb.points > 0 THEN 1 ELSE 0 END) exact,
+                    SUM(CASE WHEN sb.category = 'WINNER' AND sb.points > 0 THEN 1 ELSE 0 END) winners
+                  FROM score_breakdowns sb
+                  JOIN prediction_sets ps ON ps.id = sb.prediction_set_id AND ps.type = 'LIVE'
+                  GROUP BY sb.pool_member_id
                 ) scores ON scores.pool_member_id = pm.id
                 LEFT JOIN (
                   SELECT pool_member_id, SUM(current_amount_cents) prize_cents
@@ -189,7 +191,7 @@ public class DashboardService {
                   GROUP BY pool_member_id
                 ) prizes ON prizes.pool_member_id = pm.id
                 WHERE p.id = ?
-                  AND pm.role = 'PLAYER'
+                  AND pm.role IN ('PLAYER','ADMIN')
                 ORDER BY points DESC, u.display_name ASC
                 """, (rs, rowNum) -> new RankingDto(
                 rs.getInt("pos"),
@@ -216,7 +218,7 @@ public class DashboardService {
                 JOIN users u ON u.id = pm.user_id
                 LEFT JOIN prediction_sets ps ON ps.pool_member_id = pm.id AND ps.type = 'INITIAL'
                 LEFT JOIN score_breakdowns sb ON sb.prediction_set_id = ps.id
-                WHERE pm.pool_id = ? AND pm.role = 'PLAYER'
+                WHERE pm.pool_id = ? AND pm.role IN ('PLAYER','ADMIN')
                 GROUP BY pm.id, u.display_name
                 ORDER BY points DESC, u.display_name ASC
                 """, (rs, rowNum) -> new InitialRankingDto(
@@ -319,7 +321,9 @@ public class DashboardService {
                   m.away_goals,
                   m.status
                 FROM rounds r
-                JOIN matches m ON m.round_id = r.id AND m.result_source IN (?, 'SIM')
+                JOIN matches m ON m.round_id = r.id
+                  AND (r.stage = 'GROUP_STAGE' AND m.result_source IN (?, 'SIM')
+                       OR r.stage = 'KNOCKOUT')
                 LEFT JOIN teams ht ON ht.id = m.home_team_id
                 LEFT JOIN teams at ON at.id = m.away_team_id
                 ORDER BY
@@ -354,6 +358,7 @@ public class DashboardService {
             String pred = userPreds.getOrDefault(row.matchId(), "?-?");
             rounds.computeIfAbsent(row.roundName(), ignored -> new ArrayList<>())
                     .add(new BracketMatchDto(
+                            row.matchId(),
                             valueOrPending(row.home()),
                             valueOrFlag(row.homeFlag()),
                             valueOrPending(row.away()),

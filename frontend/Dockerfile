@@ -7,9 +7,13 @@ COPY . .
 # VITE_API_BASE_URL se pasa en tiempo de build via ARG
 ARG VITE_API_BASE_URL=/api
 ARG VITE_GOOGLE_CLIENT_ID=
+ARG VITE_ACCESS_CODE_ENABLED=false
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
 ENV VITE_GOOGLE_CLIENT_ID=$VITE_GOOGLE_CLIENT_ID
+ENV VITE_ACCESS_CODE_ENABLED=$VITE_ACCESS_CODE_ENABLED
 RUN npm run build
+# Stamp the build time so the frontend can detect new deploys
+RUN echo "{\"v\":\"$(date +%s)\"}" > /app/dist/version.json
 
 # ── Stage 2: serve ────────────────────────────────────────────────────────────
 FROM nginx:alpine

@@ -82,6 +82,7 @@ public record DashboardResponse(
     }
 
     public record BracketMatchDto(
+            long matchId,
             String home,
             String homeFl,
             String away,

@@ -1,12 +1,12 @@
 package com.mundia.backend.config;
 
 import com.mundia.backend.auth.JwtService;
+import jakarta.servlet.DispatcherType;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.annotation.Order;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
-import org.springframework.security.config.annotation.web.builders.WebSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
-import org.springframework.security.config.annotation.web.configuration.WebSecurityCustomizer;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
@@ -22,20 +22,38 @@ import java.util.List;
 @EnableWebSecurity
 public class SecurityConfig {
 
-    /** Excluye /api/auth/** del filtro JWT completamente */
+    /**
+     * Cadena 1 (máxima prioridad): /api/auth/** completamente público.
+     *
+     * Esta cadena NO declara oauth2ResourceServer, por lo que no existe filtro
+     * de Bearer token en ella → es IMPOSIBLE que devuelva 401, pase lo que pase
+     * con el entorno. El registro/login quedan siempre accesibles.
+     */
     @Bean
-    public WebSecurityCustomizer webSecurityCustomizer() {
-        return web -> web.ignoring().requestMatchers("/api/auth/**");
+    @Order(1)
+    public SecurityFilterChain authChain(HttpSecurity http) throws Exception {
+        http
+                .securityMatcher("/api/auth/**")
+                .csrf(AbstractHttpConfigurer::disable)
+                .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+                .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .authorizeHttpRequests(auth -> auth.anyRequest().permitAll());
+        return http.build();
     }
 
+    /** Cadena 2: el resto del API, protegido por JWT. */
     @Bean
-    public SecurityFilterChain filterChain(HttpSecurity http, JwtService jwtService) throws Exception {
+    @Order(2)
+    public SecurityFilterChain apiChain(HttpSecurity http, JwtService jwtService) throws Exception {
         http
                 .csrf(AbstractHttpConfigurer::disable)
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/actuator/health").permitAll()
+                        // Los errores (400/409/...) se redespachan a /error; permitirlos
+                        // para que conserven su código real en vez de enmascararse como 401.
+                        .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
+                        .requestMatchers("/error", "/actuator/health").permitAll()
                         .anyRequest().authenticated()
                 )
                 .oauth2ResourceServer(oauth2 -> oauth2
@@ -58,7 +76,7 @@ public class SecurityConfig {
                 "https://mundial.vicai.es"
         ));
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
-        config.setAllowedHeaders(List.of("*"));
+        config.setAllowedHeaders(List.of("Content-Type", "Authorization", "Accept"));
         config.setExposedHeaders(List.of("Authorization"));
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/api/**", config);

@@ -44,7 +44,7 @@ public class ScoringService {
         // Recalculate prizes for all pools
         try {
             List<Long> poolIds = jdbc.query(
-                    "SELECT DISTINCT pool_id FROM pool_members WHERE role = 'PLAYER'",
+                    "SELECT DISTINCT pool_id FROM pool_members WHERE role IN ('PLAYER','ADMIN')",
                     (rs, i) -> rs.getLong("pool_id"));
             for (long poolId : poolIds) {
                 prizeCalculationService.recalculate(poolId);

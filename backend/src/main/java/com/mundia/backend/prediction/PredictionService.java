@@ -63,12 +63,28 @@ public class PredictionService {
                 predictionSetId, matchId, homeGoals, awayGoals);
     }
 
-    /** Full pipeline: member check → cutoff check → get/create LIVE set → upsert prediction. */
+    /** Full pipeline: member check → cutoff check → group-lock check → get/create LIVE set → upsert prediction. */
     public void saveForUser(long userId, long poolId, long matchId, int homeGoals, int awayGoals) {
         long memberId = requirePoolMember(userId, poolId);
         checkCutoff(matchId);
+        checkGroupStageLock(memberId, matchId);
         long setId    = getOrCreatePredictionSet(memberId);
         savePrediction(setId, matchId, homeGoals, awayGoals);
+    }
+
+    private void checkGroupStageLock(long memberId, long matchId) {
+        String stage = jdbc.query(
+                "SELECT r.stage FROM matches m JOIN rounds r ON r.id = m.round_id WHERE m.id = ?",
+                (rs, i) -> rs.getString("stage"), matchId)
+                .stream().findFirst().orElse(null);
+        if (!"GROUP_STAGE".equals(stage)) return;
+        Integer submitted = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM prediction_sets WHERE pool_member_id = ? AND type = 'INITIAL' AND status = 'SUBMITTED'",
+                Integer.class, memberId);
+        if (submitted != null && submitted > 0) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Las predicciones de fase de grupos están bloqueadas: ya guardaste tu apuesta inicial");
+        }
     }
 
     /**
@@ -106,7 +122,7 @@ public class PredictionService {
         Integer count = jdbc.queryForObject("""
                 SELECT COUNT(*) FROM prediction_sets ps
                 JOIN pool_members pm ON pm.id = ps.pool_member_id
-                WHERE pm.user_id = ? AND pm.pool_id = ? AND ps.type = 'INITIAL'
+                WHERE pm.user_id = ? AND pm.pool_id = ? AND ps.type = 'INITIAL' AND ps.status = 'SUBMITTED'
                 """, Integer.class, userId, poolId);
         return count != null && count > 0;
     }

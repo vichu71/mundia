@@ -45,7 +45,7 @@ public class PrizeCalculationService {
         // A player is alive if they have no wrong WINNER prediction on any closed match
         boolean plenoAlive = !jdbc.query("""
                 SELECT pm.id FROM pool_members pm
-                WHERE pm.pool_id = ? AND pm.role = 'PLAYER'
+                WHERE pm.pool_id = ? AND pm.role IN ('PLAYER','ADMIN')
                   AND NOT EXISTS (
                     SELECT 1 FROM matches m
                     JOIN rounds r ON r.id = m.round_id
@@ -75,7 +75,7 @@ public class PrizeCalculationService {
 
         // ── Member list ───────────────────────────────────────────────────────
         List<Long> members = jdbc.query("""
-                SELECT id FROM pool_members WHERE pool_id = ? AND role = 'PLAYER'
+                SELECT id FROM pool_members WHERE pool_id = ? AND role IN ('PLAYER','ADMIN')
                 """, (rs, i) -> rs.getLong("id"), poolId);
 
         // ── Clear previous projections ────────────────────────────────────────
@@ -128,7 +128,7 @@ public class PrizeCalculationService {
     private List<Long> findPlenoSurvivors(long poolId) {
         return jdbc.query("""
                 SELECT pm.id FROM pool_members pm
-                WHERE pm.pool_id = ? AND pm.role = 'PLAYER'
+                WHERE pm.pool_id = ? AND pm.role IN ('PLAYER','ADMIN')
                   AND NOT EXISTS (
                     SELECT 1 FROM matches m
                     WHERE m.home_goals IS NOT NULL
@@ -149,7 +149,7 @@ public class PrizeCalculationService {
                 SELECT pm.id FROM pool_members pm
                 LEFT JOIN prediction_sets ps ON ps.pool_member_id = pm.id AND ps.type = ?
                 LEFT JOIN score_breakdowns sb ON sb.prediction_set_id = ps.id
-                WHERE pm.pool_id = ? AND pm.role = 'PLAYER'
+                WHERE pm.pool_id = ? AND pm.role IN ('PLAYER','ADMIN')
                 GROUP BY pm.id
                 HAVING SUM(COALESCE(sb.points, 0)) = (
                   SELECT MAX(total) FROM (
@@ -157,7 +157,7 @@ public class PrizeCalculationService {
                     FROM pool_members pm2
                     LEFT JOIN prediction_sets ps2 ON ps2.pool_member_id = pm2.id AND ps2.type = ?
                     LEFT JOIN score_breakdowns sb2 ON sb2.prediction_set_id = ps2.id
-                    WHERE pm2.pool_id = ? AND pm2.role = 'PLAYER'
+                    WHERE pm2.pool_id = ? AND pm2.role IN ('PLAYER','ADMIN')
                     GROUP BY pm2.id
                   ) totals
                 )
@@ -169,7 +169,7 @@ public class PrizeCalculationService {
                 SELECT pm.id FROM pool_members pm
                 LEFT JOIN prediction_sets ps ON ps.pool_member_id = pm.id AND ps.type = 'LIVE'
                 LEFT JOIN score_breakdowns sb ON sb.prediction_set_id = ps.id AND sb.category = ?
-                WHERE pm.pool_id = ? AND pm.role = 'PLAYER'
+                WHERE pm.pool_id = ? AND pm.role IN ('PLAYER','ADMIN')
                 GROUP BY pm.id
                 HAVING COUNT(sb.id) = (
                   SELECT MAX(cnt) FROM (
@@ -177,7 +177,7 @@ public class PrizeCalculationService {
                     FROM pool_members pm2
                     LEFT JOIN prediction_sets ps2 ON ps2.pool_member_id = pm2.id AND ps2.type = 'LIVE'
                     LEFT JOIN score_breakdowns sb2 ON sb2.prediction_set_id = ps2.id AND sb2.category = ?
-                    WHERE pm2.pool_id = ? AND pm2.role = 'PLAYER'
+                    WHERE pm2.pool_id = ? AND pm2.role IN ('PLAYER','ADMIN')
                     GROUP BY pm2.id
                   ) counts
                 )
@@ -206,7 +206,7 @@ public class PrizeCalculationService {
                 JOIN match_predictions mp ON mp.prediction_set_id = ps.id
                 JOIN matches m ON m.id = mp.match_id
                 JOIN rounds r ON r.id = m.round_id
-                WHERE pm.pool_id = ? AND pm.role = 'PLAYER'
+                WHERE pm.pool_id = ? AND pm.role IN ('PLAYER','ADMIN')
                   AND r.name = 'Final'
                   AND (
                     (m.home_team_id = ? AND mp.home_goals > mp.away_goals)

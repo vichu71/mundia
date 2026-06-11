@@ -8,6 +8,7 @@ spring:
     driver-class-name: org.mariadb.jdbc.Driver
   flyway:
     enabled: true
+    repair-on-migrate: true
   jpa:
     hibernate:
       ddl-auto: validate

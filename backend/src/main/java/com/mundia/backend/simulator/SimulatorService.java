@@ -193,7 +193,7 @@ public class SimulatorService {
             int h = randomGoals();
             int a = randomGoals();
             jdbc.update("""
-                    UPDATE matches SET home_goals = ?, away_goals = ?, status = 'FINISHED'
+                    UPDATE matches SET home_goals = ?, away_goals = ?, status = 'FINISHED', result_source = 'SIM'
                     WHERE id = ?
                     """, h, a, matchId);
         }
@@ -226,17 +226,17 @@ public class SimulatorService {
                 WHERE pm.pool_id = ? AND u.is_sim = TRUE
                 """, poolId);
 
-        // 2. Delete ALL score_breakdowns and match_predictions referencing SIM matches
+        // 2. Delete ALL score_breakdowns and match_predictions referencing SIM or NONE matches
         //    (any user, including real admin who may have predicted knockout games)
         jdbc.update("""
                 DELETE sb FROM score_breakdowns sb
                 JOIN matches m ON m.id = sb.match_id
-                WHERE m.result_source = 'SIM'
+                WHERE m.result_source IN ('SIM', 'NONE')
                 """);
         jdbc.update("""
                 DELETE mp FROM match_predictions mp
                 JOIN matches m ON m.id = mp.match_id
-                WHERE m.result_source = 'SIM'
+                WHERE m.result_source IN ('SIM', 'NONE')
                 """);
 
         // 3. Delete match_predictions for sim users (any match)
@@ -274,18 +274,70 @@ public class SimulatorService {
         // 7. Delete orphan sim users
         jdbc.update("DELETE FROM users WHERE is_sim = TRUE");
 
-        // 8. Clear results from real matches
+        // 8. Only touch WC26_IR match data if no real finished matches exist yet
+        //    (once the tournament is live, real results must not be wiped by a sim reset)
+        Integer finishedReal = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM matches WHERE result_source = 'WC26_IR' AND status IN ('FINISHED','CLOSED')",
+                Integer.class);
+        if (finishedReal == null || finishedReal == 0) {
+            // Pre-tournament: safe to wipe test/preview goals and their scoring
+            jdbc.update("""
+                    DELETE sb FROM score_breakdowns sb
+                    JOIN matches m ON m.id = sb.match_id
+                    WHERE m.result_source = 'WC26_IR'
+                    """);
+            jdbc.update("""
+                    UPDATE matches SET home_goals = NULL, away_goals = NULL, status = 'OPEN'
+                    WHERE result_source = 'WC26_IR'
+                    """);
+        } else {
+            log.info("[Sim] Tournament already live ({} finished matches) — skipping WC26_IR data wipe", finishedReal);
+        }
+
+        // 9. Restore group-stage matches that were simulated (SIM) back to WC26_IR + OPEN
+        //    (these are real WC matches that had simulation results applied)
         jdbc.update("""
-                UPDATE matches SET home_goals = NULL, away_goals = NULL, status = 'OPEN'
-                WHERE result_source = 'WC26_IR'
+                UPDATE matches m
+                JOIN rounds r ON r.id = m.round_id
+                SET m.home_goals = NULL, m.away_goals = NULL, m.status = 'OPEN', m.result_source = 'WC26_IR'
+                WHERE m.result_source = 'SIM' AND r.stage = 'GROUP_STAGE'
                 """);
 
-        // 9. Delete SIM matches and their empty knockout rounds
-        jdbc.update("DELETE FROM matches WHERE result_source = 'SIM'");
+        // 10a. Knockout rows that came from a real sync but were overwritten by the sim:
+        //      restore them as WC26_IR shells (keep teams/kickoff, wipe results)
         jdbc.update("""
-                DELETE FROM rounds WHERE name IN ('Round of 32','Round of 16','Quarter-finals','Semi-finals','Third place','Final')
-                AND NOT EXISTS (SELECT 1 FROM matches m WHERE m.round_id = rounds.id)
+                UPDATE matches m
+                JOIN rounds r ON r.id = m.round_id
+                SET m.home_goals = NULL, m.away_goals = NULL,
+                    m.status = 'OPEN', m.status_short = 'NS', m.result_source = 'WC26_IR'
+                WHERE r.stage = 'KNOCKOUT' AND m.result_source = 'SIM'
+                  AND m.external_fixture_id IS NOT NULL
                 """);
+
+        // 10b. Third place is not part of the 31-match canonical bracket: drop sim-created rows
+        jdbc.update("""
+                DELETE m FROM matches m
+                JOIN rounds r ON r.id = m.round_id
+                WHERE r.name = 'Third place' AND m.result_source IN ('SIM','NONE')
+                  AND m.external_fixture_id IS NULL
+                """);
+
+        // 10c. Revert every remaining sim-only knockout row to an empty Pendiente placeholder.
+        //      Includes 'NONE' rows so no residual results can survive a reset.
+        //      Match ids are preserved (canonical knockout model).
+        jdbc.update("""
+                UPDATE matches m
+                JOIN rounds r ON r.id = m.round_id
+                JOIN teams t  ON t.name = 'Pendiente'
+                SET m.home_team_id = t.id, m.away_team_id = t.id,
+                    m.home_goals = NULL, m.away_goals = NULL, m.kickoff_at = NULL,
+                    m.status = 'OPEN', m.status_short = 'NS', m.result_source = 'NONE'
+                WHERE r.stage = 'KNOCKOUT' AND m.result_source IN ('SIM','NONE')
+                  AND m.external_fixture_id IS NULL
+                """);
+
+        // 10d. Any leftover SIM matches outside knockout rounds (defensive)
+        jdbc.update("DELETE FROM matches WHERE result_source = 'SIM'");
 
         setSimDay(poolId, 0);
 
@@ -327,7 +379,7 @@ public class SimulatorService {
                     """, (rs, i) -> rs.getLong("id"), date);
             for (long id : ids) {
                 int h = randomGoals(); int a = randomGoals();
-                jdbc.update("UPDATE matches SET home_goals=?, away_goals=?, status='FINISHED' WHERE id=?", h, a, id);
+                jdbc.update("UPDATE matches SET home_goals=?, away_goals=?, status='FINISHED', result_source='SIM' WHERE id=?", h, a, id);
             }
             setSimDay(poolId, getSimDay(poolId) + 1);
             log.append("Grupos ").append(date).append(": ").append(ids.size()).append(" partidos\n");
@@ -376,13 +428,15 @@ public class SimulatorService {
         log.append(roundName).append(": ").append(n).append(" partidos\n");
     }
 
-    /** Plays (assigns random results to) all unplayed matches of a round. Returns count. */
+    /** Plays (assigns random results to) all unplayed SIM matches of a round. Returns count. */
     @Transactional
     public int playRound(String roundName) {
+        // Only SIM matches: NONE placeholders must never receive results
+        // (that was the source of residual scores after a reset)
         List<Long> ids = jdbc.query("""
                 SELECT m.id FROM matches m
                 JOIN rounds r ON r.id = m.round_id
-                WHERE r.name = ? AND m.home_goals IS NULL
+                WHERE r.name = ? AND m.home_goals IS NULL AND m.result_source = 'SIM'
                 """, (rs, i) -> rs.getLong("id"), roundName);
         for (long id : ids) {
             int h = randomGoals(); int a = randomGoals();
@@ -423,7 +477,7 @@ public class SimulatorService {
         for (int i = 0; i < 16; i++) {
             long homeId = classified.get(i * 2);
             long awayId = classified.get(i * 2 + 1);
-            long matchId = upsertSimMatch(roundId, homeId, awayId, dates[i]);
+            long matchId = fillKnockoutSlot(roundId, i, homeId, awayId, dates[i]);
             generateSimPredictions(matchId, poolId);
             created++;
         }
@@ -434,27 +488,29 @@ public class SimulatorService {
 
     @Transactional
     public KnockoutGenResult advanceKnockoutRound(long poolId, String currentRound, String nextRound, int sortOrder, String[] dates) {
-        // Get winners of current round
-        List<Long> winners = jdbc.query("""
-                SELECT CASE WHEN m.home_goals > m.away_goals THEN m.home_team_id
-                            WHEN m.away_goals > m.home_goals THEN m.away_team_id
-                            ELSE m.home_team_id END winner_id
+        // Third place is fed by the LOSERS of the semi-finals, every other round by the winners
+        boolean thirdPlace = "Third place".equals(nextRound);
+        String advancerExpr = thirdPlace
+                ? "CASE WHEN m.home_goals >= m.away_goals THEN m.away_team_id ELSE m.home_team_id END"
+                : "CASE WHEN m.home_goals >= m.away_goals THEN m.home_team_id ELSE m.away_team_id END";
+        List<Long> advancers = jdbc.query("""
+                SELECT %s advancer_id
                 FROM matches m
                 JOIN rounds r ON r.id = m.round_id
                 WHERE r.name = ? AND m.result_source = 'SIM'
                   AND m.home_goals IS NOT NULL AND m.away_goals IS NOT NULL
                 ORDER BY m.kickoff_at, m.id
-                """, (rs, i) -> rs.getLong("winner_id"), currentRound);
+                """.formatted(advancerExpr), (rs, i) -> rs.getLong("advancer_id"), currentRound);
 
-        if (winners.isEmpty()) {
+        if (advancers.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "Ronda " + currentRound + " no completada");
         }
 
         long roundId = upsertSimRound(nextRound, "KNOCKOUT", sortOrder);
         int created = 0;
-        for (int i = 0; i < winners.size() / 2; i++) {
-            long matchId = upsertSimMatch(roundId, winners.get(i * 2), winners.get(i * 2 + 1), dates[i]);
+        for (int i = 0; i < advancers.size() / 2; i++) {
+            long matchId = fillKnockoutSlot(roundId, i, advancers.get(i * 2), advancers.get(i * 2 + 1), dates[i]);
             generateSimPredictions(matchId, poolId);
             created++;
         }
@@ -474,20 +530,29 @@ public class SimulatorService {
         return id;
     }
 
-    private long upsertSimMatch(long roundId, long homeId, long awayId, String kickoff) {
-        // Delete match_predictions first, then the match (FK order)
+    /**
+     * Fills the nth placeholder slot of a knockout round with real teams, keeping the
+     * match id stable so existing user predictions survive. Falls back to INSERT only
+     * when the round has no free slot (e.g. Third place, outside the 31-match bracket).
+     */
+    private long fillKnockoutSlot(long roundId, int slotIndex, long homeId, long awayId, String kickoff) {
+        List<Long> slots = jdbc.query(
+                "SELECT id FROM matches WHERE round_id = ? ORDER BY id",
+                (rs, i) -> rs.getLong("id"), roundId);
+        if (slotIndex < slots.size()) {
+            long matchId = slots.get(slotIndex);
+            jdbc.update("""
+                    UPDATE matches
+                    SET home_team_id = ?, away_team_id = ?, kickoff_at = ?,
+                        status = 'OPEN', status_short = 'NS',
+                        home_goals = NULL, away_goals = NULL, result_source = 'SIM'
+                    WHERE id = ?
+                    """, homeId, awayId, kickoff, matchId);
+            return matchId;
+        }
         jdbc.update("""
-                DELETE mp FROM match_predictions mp
-                JOIN matches m ON m.id = mp.match_id
-                WHERE m.round_id = ? AND m.home_team_id = ? AND m.away_team_id = ? AND m.result_source = 'SIM'
-                """, roundId, homeId, awayId);
-        jdbc.update("""
-                DELETE FROM matches
-                WHERE round_id = ? AND home_team_id = ? AND away_team_id = ? AND result_source = 'SIM'
-                """, roundId, homeId, awayId);
-        jdbc.update("""
-                INSERT INTO matches (round_id, home_team_id, away_team_id, kickoff_at, status, result_source)
-                VALUES (?, ?, ?, ?, 'OPEN', 'SIM')
+                INSERT INTO matches (round_id, home_team_id, away_team_id, kickoff_at, status, status_short, result_source)
+                VALUES (?, ?, ?, ?, 'OPEN', 'NS', 'SIM')
                 """, roundId, homeId, awayId, kickoff);
         Long id = jdbc.queryForObject(
                 "SELECT LAST_INSERT_ID()", Long.class);

@@ -85,7 +85,13 @@ public class SimulatorController {
         return ResponseEntity.ok(result);
     }
 
+    private static final String SUPER_ADMIN_EMAIL = "victor.huecas@gmail.com";
+
     private void requireAdmin(JwtAuthenticationToken auth, long poolId) {
+        String email = auth.getToken().getClaimAsString("email");
+        if (!SUPER_ADMIN_EMAIL.equals(email)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Simulador solo disponible para el administrador principal");
+        }
         long userId = Long.parseLong(auth.getToken().getSubject());
         String role = jdbc.query(
                 "SELECT role FROM pool_members WHERE pool_id = ? AND user_id = ?",

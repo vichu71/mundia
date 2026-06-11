@@ -119,8 +119,8 @@ public class AuthController {
         if (req.email() == null || req.email().isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "El email es obligatorio");
         }
-        if (req.password() == null || req.password().length() < 6) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "La contraseña debe tener al menos 6 caracteres");
+        if (req.password() == null || req.password().length() < 8) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "La contraseña debe tener al menos 8 caracteres");
         }
         if (req.displayName() == null || req.displayName().isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "El nombre es obligatorio");

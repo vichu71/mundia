@@ -6,6 +6,7 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -127,7 +128,7 @@ public class WorldCup26SyncService {
         for (JsonNode t : root.path("teams")) {
             String wc26Id = t.path("id").asText();
             String name   = t.path("name_en").asText("Unknown");
-            String iso2   = t.path("iso2").asText("un").toLowerCase();
+            String iso2   = normalizeIso2(name, t.path("iso2").asText("un").toLowerCase());
             long extId    = -(Long.parseLong(wc26Id));
             jdbc.update("""
                     INSERT INTO teams (external_team_id, name, country_code)
@@ -181,6 +182,13 @@ public class WorldCup26SyncService {
         // use negative wc26 game id as external_fixture_id (avoids collision)
         long extFixtureId = -(Long.parseLong(wc26GameId));
 
+        boolean knockout = !"group".equalsIgnoreCase(type);
+        if (knockout) {
+            upsertKnockoutGame(extFixtureId, roundId, homeTeamId, awayTeamId,
+                    kickoff, status, statusShort, homeGoals, awayGoals);
+            return true;
+        }
+
         jdbc.update("""
                 INSERT INTO matches
                   (external_fixture_id, round_id, home_team_id, away_team_id,
@@ -197,6 +205,56 @@ public class WorldCup26SyncService {
                 extFixtureId, roundId, homeTeamId, awayTeamId,
                 kickoff, status, statusShort, homeGoals, awayGoals);
         return true;
+    }
+
+    /**
+     * Knockout matches follow the canonical model: one row per match, forever.
+     * A synced game first tries the row already claimed via external_fixture_id,
+     * then claims the lowest free placeholder of its round (keeping the match id —
+     * and with it every user prediction). Only inserts when no placeholder is free.
+     */
+    private void upsertKnockoutGame(long extFixtureId, long roundId, long homeTeamId, long awayTeamId,
+                                    java.sql.Timestamp kickoff, String status, String statusShort,
+                                    Integer homeGoals, Integer awayGoals) {
+        int updated = jdbc.update("""
+                UPDATE matches
+                SET round_id = ?, home_team_id = ?, away_team_id = ?, kickoff_at = ?,
+                    status = ?, status_short = ?, home_goals = ?, away_goals = ?,
+                    result_source = 'WC26_IR', last_synced_at = CURRENT_TIMESTAMP(6)
+                WHERE external_fixture_id = ?
+                """,
+                roundId, homeTeamId, awayTeamId, kickoff,
+                status, statusShort, homeGoals, awayGoals, extFixtureId);
+        if (updated > 0) return;
+
+        List<Long> freeSlot = jdbc.query("""
+                SELECT id FROM matches
+                WHERE round_id = ? AND external_fixture_id IS NULL AND result_source = 'NONE'
+                ORDER BY id
+                LIMIT 1
+                """, (rs, i) -> rs.getLong("id"), roundId);
+        if (!freeSlot.isEmpty()) {
+            jdbc.update("""
+                    UPDATE matches
+                    SET external_fixture_id = ?, home_team_id = ?, away_team_id = ?, kickoff_at = ?,
+                        status = ?, status_short = ?, home_goals = ?, away_goals = ?,
+                        result_source = 'WC26_IR', last_synced_at = CURRENT_TIMESTAMP(6)
+                    WHERE id = ?
+                    """,
+                    extFixtureId, homeTeamId, awayTeamId, kickoff,
+                    status, statusShort, homeGoals, awayGoals, freeSlot.get(0));
+            return;
+        }
+
+        jdbc.update("""
+                INSERT INTO matches
+                  (external_fixture_id, round_id, home_team_id, away_team_id,
+                   kickoff_at, status, status_short, home_goals, away_goals,
+                   result_source, last_synced_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'WC26_IR', CURRENT_TIMESTAMP(6))
+                """,
+                extFixtureId, roundId, homeTeamId, awayTeamId,
+                kickoff, status, statusShort, homeGoals, awayGoals);
     }
 
     private String resolveRoundName(String type, String group) {
