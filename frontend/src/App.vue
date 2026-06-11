@@ -76,6 +76,8 @@ type ApiSyncState = {
 const JWT_KEY = 'mundia_jwt'
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID ?? ''
 
+const appVersion = ref<string>('Loading...')
+
 type CurrentUser = { name: string; email: string; avatarUrl: string | null }
 type UserPool = { id: number; name: string; code: string; role: string }
 
@@ -1814,6 +1816,16 @@ async function loadRemoteState() {
 //  LIFECYCLE
 // ──────────────────────────────────────────
 onMounted(async () => {
+  // Cargar versión desde el backend
+  try {
+    const res = await fetch(`${API_BASE_URL}/version`)
+    if (res.ok) {
+      const data = await res.json()
+      appVersion.value = data.version ?? 'Unknown'
+    }
+  } catch {
+    appVersion.value = '(offline)'
+  }
   if (authToken.value) {
     await loadMe()
     if (userPools.value.length > 0) {
@@ -1901,6 +1913,11 @@ watch(activePool, async () => {
         <button class="btn btn--primary" style="width:100%;margin-top:4px" :disabled="emailForm.loading" @click="emailRegister">
           {{ emailForm.loading ? 'Creando cuenta…' : 'Crear cuenta' }}
         </button>
+      </div>
+
+      <!-- Version footer -->
+      <div style="text-align:center;margin-top:16px;font-size:0.75rem;color:var(--muted)">
+        v{{ appVersion }}
       </div>
     </div>
   </div>
