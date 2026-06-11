@@ -127,6 +127,73 @@ public class PredictionService {
         return count != null && count > 0;
     }
 
+    /** Returns closed predictions for a given pool member (matches whose cutoff has passed). */
+    public List<ClosedPrediction> getClosedPredictionsForMember(long memberId, long poolId) {
+        // Verify the memberId belongs to the poolId
+        List<Long> check = jdbc.query(
+                "SELECT id FROM pool_members WHERE id = ? AND pool_id = ?",
+                (rs, i) -> rs.getLong("id"), memberId, poolId);
+        if (check.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Member does not belong to this pool");
+        }
+
+        return jdbc.query("""
+                SELECT
+                  m.id          AS match_id,
+                  ht.name       AS home,
+                  at.name       AS away,
+                  ht.country_code AS home_fl,
+                  at.country_code AS away_fl,
+                  mp.home_goals AS pred_home,
+                  mp.away_goals AS pred_away,
+                  m.home_goals  AS real_home,
+                  m.away_goals  AS real_away,
+                  m.status,
+                  m.kickoff_at,
+                  r.name        AS round_name,
+                  COALESCE(sb.points, 0) AS points
+                FROM prediction_sets ps
+                JOIN match_predictions mp ON mp.prediction_set_id = ps.id
+                JOIN matches m            ON m.id = mp.match_id
+                JOIN teams ht             ON ht.id = m.home_team_id
+                JOIN teams at             ON at.id = m.away_team_id
+                JOIN rounds r             ON r.id = m.round_id
+                LEFT JOIN score_breakdowns sb
+                       ON sb.prediction_set_id = ps.id AND sb.match_id = m.id
+                WHERE ps.pool_member_id = ?
+                  AND ps.type = 'LIVE'
+                  AND (m.status IN ('LIVE','CLOSED','FINISHED') OR m.kickoff_at <= NOW())
+                ORDER BY m.kickoff_at ASC
+                """,
+                (rs, i) -> {
+                    java.sql.Timestamp ts = rs.getTimestamp("kickoff_at");
+                    String kickoff = ts != null ? ts.toInstant().toString() : null;
+                    return new ClosedPrediction(
+                            rs.getLong("match_id"),
+                            rs.getString("home"),
+                            rs.getString("away"),
+                            rs.getString("home_fl"),
+                            rs.getString("away_fl"),
+                            rs.getInt("pred_home"),
+                            rs.getInt("pred_away"),
+                            (Integer) rs.getObject("real_home"),
+                            (Integer) rs.getObject("real_away"),
+                            rs.getString("status"),
+                            kickoff,
+                            rs.getString("round_name"),
+                            rs.getInt("points")
+                    );
+                }, memberId);
+    }
+
+    public record ClosedPrediction(
+            long matchId,
+            String home, String away, String homeFl, String awayFl,
+            Integer predHome, Integer predAway,
+            Integer realHome, Integer realAway,
+            String status, String kickoff, String roundName, int points
+    ) {}
+
     private static final int CUTOFF_MINUTES = 60;
 
     private void checkCutoff(long matchId) {

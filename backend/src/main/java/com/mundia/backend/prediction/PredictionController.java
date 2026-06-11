@@ -138,6 +138,17 @@ public class PredictionController {
         return java.util.Map.of("ok", true);
     }
 
+    /** GET /api/predictions/pool/{poolId}/member/{memberId}/closed — closed predictions for a member */
+    @GetMapping("/pool/{poolId}/member/{memberId}/closed")
+    public List<PredictionService.ClosedPrediction> getClosedPredictions(
+            JwtAuthenticationToken auth,
+            @PathVariable long poolId,
+            @PathVariable long memberId) {
+        long userId = Long.parseLong(auth.getToken().getSubject());
+        predictionService.requirePoolMember(userId, poolId);
+        return predictionService.getClosedPredictionsForMember(memberId, poolId);
+    }
+
     /**
      * POST /api/predictions/ai/{matchId}
      * Returns an AI-generated (or random fallback) score prediction for the given match.

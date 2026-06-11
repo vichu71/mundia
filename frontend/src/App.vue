@@ -33,7 +33,7 @@ type TabId = 'home' | 'matches' | 'bracket' | 'ranking' | 'prizes' | 'admin'
 
 type Pool = { id: number; name: string; code: string; status: string; statusType: string; userRole: string; members: number; paid: number; pot: number }
 type Match = { id: number; home: string; away: string; homeFl: string; awayFl: string; pred: string; real: string; points: number | null; status: string; statusType: string; note: string; kickoff: string | null; source: string | null; roundName: string | null; stage: string | null }
-type RankingRow = { pos: number; name: string; avatar: string; points: number; exact: number; winners: number; prize: number; delta: string; alive: boolean }
+type RankingRow = { pos: number; memberId: number; name: string; avatar: string; points: number; exact: number; winners: number; prize: number; delta: string; alive: boolean }
 type InitialRankingRow = { pos: number; name: string; points: number; exact: number; winners: number; bonus: string }
 type PrizeRow = { label: string; amount: number; state: string; stateType: string; contenders: number; pct: number }
 type BracketMatch = { matchId: number; home: string; homeFl: string; away: string; awayFl: string; pred: string; real: string; winner: string; done: boolean }
@@ -864,12 +864,12 @@ const matches = ref<Match[]>([
 ])
 
 const ranking = ref<RankingRow[]>([
-  { pos: 1, name: 'Diego',    avatar: 'DI', points: 0, exact: 0, winners: 0, prize: 0, delta: '=', alive: true },
-  { pos: 2, name: 'Juan',     avatar: 'JU', points: 0, exact: 0, winners: 0, prize: 0, delta: '=', alive: true },
-  { pos: 3, name: 'David',    avatar: 'DA', points: 0, exact: 0, winners: 0, prize: 0, delta: '=', alive: true },
-  { pos: 4, name: 'Sonia',    avatar: 'SO', points: 0, exact: 0, winners: 0, prize: 0, delta: '=', alive: true },
-  { pos: 5, name: 'Petri',    avatar: 'PE', points: 0, exact: 0, winners: 0, prize: 0, delta: '=', alive: true },
-  { pos: 6, name: 'Fernando', avatar: 'FE', points: 0, exact: 0, winners: 0, prize: 0, delta: '=', alive: true },
+  { pos: 1, memberId: 0, name: 'Diego',    avatar: 'DI', points: 0, exact: 0, winners: 0, prize: 0, delta: '=', alive: true },
+  { pos: 2, memberId: 0, name: 'Juan',     avatar: 'JU', points: 0, exact: 0, winners: 0, prize: 0, delta: '=', alive: true },
+  { pos: 3, memberId: 0, name: 'David',    avatar: 'DA', points: 0, exact: 0, winners: 0, prize: 0, delta: '=', alive: true },
+  { pos: 4, memberId: 0, name: 'Sonia',    avatar: 'SO', points: 0, exact: 0, winners: 0, prize: 0, delta: '=', alive: true },
+  { pos: 5, memberId: 0, name: 'Petri',    avatar: 'PE', points: 0, exact: 0, winners: 0, prize: 0, delta: '=', alive: true },
+  { pos: 6, memberId: 0, name: 'Fernando', avatar: 'FE', points: 0, exact: 0, winners: 0, prize: 0, delta: '=', alive: true },
 ])
 
 const initialRanking = ref<InitialRankingRow[]>([
@@ -950,6 +950,39 @@ const allTeams          = ref<Team[]>([])
 const showChampionPicker = ref(false)
 const championPickerSearch = ref('')
 const championSaving    = ref(false)
+
+// ─── Modal predicciones de usuario ───────────────────────────────────────────
+type UserPredView = {
+  matchId: number; home: string; away: string; homeFl: string; awayFl: string
+  pred: string; real: string; points: number; kickoff: string | null; roundName: string; status: string
+}
+const userPredModal = ref<{
+  open: boolean; name: string; avatar: string; predictions: UserPredView[]; loading: boolean
+}>({ open: false, name: '', avatar: '', predictions: [], loading: false })
+
+async function openUserPreds(user: RankingRow) {
+  userPredModal.value = { open: true, name: user.name, avatar: user.avatar, predictions: [], loading: true }
+  try {
+    const res = await fetchWithAuth(`${API_BASE_URL}/predictions/pool/${activePoolId.value}/member/${user.memberId}/closed`)
+    if (res.ok) {
+      const data = await res.json()
+      userPredModal.value.predictions = data.map((p: any) => ({
+        matchId:   p.matchId,
+        home:      p.home,
+        away:      p.away,
+        homeFl:    p.homeFl,
+        awayFl:    p.awayFl,
+        pred:      p.predHome != null ? `${p.predHome} - ${p.predAway}` : '? - ?',
+        real:      p.realHome != null ? `${p.realHome} - ${p.realAway}` : 'Pend.',
+        points:    p.points ?? 0,
+        kickoff:   p.kickoff,
+        roundName: p.roundName,
+        status:    p.status,
+      }))
+    }
+  } catch { /* silencio */ }
+  userPredModal.value.loading = false
+}
 
 // Equipos WC2026 garantizados (fallback si el backend no los devuelve)
 const WC2026_TEAMS: Team[] = [
@@ -2509,7 +2542,10 @@ watch(activePool, async () => {
           <article class="panel ranking-table-panel">
             <div class="panel__header"><Trophy :size="18" /><h2>Clasificación general</h2></div>
             <div class="ranking-table">
-              <div v-for="p in ranking" :key="p.name" :class="['ranking-row', { 'ranking-row--alive': p.alive }, { 'ranking-row--me': p.name === currentUser?.name }]">
+              <div v-for="p in ranking" :key="p.name"
+                   :class="['ranking-row', 'ranking-row--clickable', { 'ranking-row--alive': p.alive }, { 'ranking-row--me': p.name === currentUser?.name }]"
+                   @click="openUserPreds(p)"
+                   title="Ver predicciones cerradas">
                 <span class="ranking-pos">{{ posLabel(p.pos) }}</span>
                 <div class="ranking-avatar">{{ p.avatar }}</div>
                 <div class="ranking-info">
@@ -3801,6 +3837,67 @@ watch(activePool, async () => {
           <button class="btn btn--primary" type="button" :disabled="bracketPredModal.saving" @click="saveBracketPred">
             <Check :size="14" /> {{ bracketPredModal.saving ? '…' : 'Guardar predicción' }}
           </button>
+        </div>
+
+      </div>
+    </div>
+  </Teleport>
+
+  <!-- ═══════════════ MODAL: Predicciones de usuario ═══════════════ -->
+  <Teleport to="body">
+    <div v-if="userPredModal.open" class="pred-backdrop" @click.self="userPredModal.open = false" @keydown.esc="userPredModal.open = false">
+      <div class="pred-modal user-preds-modal" role="dialog" aria-modal="true" :aria-label="`Predicciones de ${userPredModal.name}`"
+           style="max-width:480px;max-height:85vh;display:flex;flex-direction:column">
+
+        <div class="pred-modal__header" style="display:flex;align-items:center;gap:10px;flex-shrink:0">
+          <div class="ranking-avatar" style="width:36px;height:36px;font-size:0.85rem;flex-shrink:0">{{ userPredModal.avatar }}</div>
+          <div style="flex:1;min-width:0">
+            <strong style="display:block">{{ userPredModal.name }}</strong>
+            <small class="muted" v-if="!userPredModal.loading">
+              {{ userPredModal.predictions.length }} predicciones cerradas
+            </small>
+          </div>
+          <button class="pred-modal__close" type="button" @click="userPredModal.open = false">✕</button>
+        </div>
+
+        <div style="overflow-y:auto;flex:1;padding:0 2px 4px">
+          <div v-if="userPredModal.loading" style="text-align:center;padding:32px;color:var(--muted)">Cargando…</div>
+          <div v-else-if="userPredModal.predictions.length === 0" style="text-align:center;padding:32px;color:var(--muted)">Sin predicciones cerradas todavía</div>
+          <div v-else style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+            <div
+              v-for="p in userPredModal.predictions"
+              :key="p.matchId"
+              class="user-pred-card"
+              :style="`border-left:3px solid ${p.points > 0 ? 'var(--green)' : 'var(--border)'}`"
+            >
+              <div style="font-size:0.7rem;color:var(--muted);margin-bottom:4px">{{ p.roundName }}</div>
+              <div style="display:flex;align-items:center;gap:8px">
+                <div style="display:flex;align-items:center;gap:5px;flex:1;min-width:0;justify-content:flex-end">
+                  <span style="font-size:0.85rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ p.home }}</span>
+                  <span :class="`fi fi-${p.homeFl} flag-sm`"></span>
+                </div>
+                <div style="display:flex;gap:10px;align-items:center;flex-shrink:0;text-align:center">
+                  <div>
+                    <div style="font-size:0.7rem;color:var(--muted);line-height:1">pred</div>
+                    <strong style="font-size:1rem">{{ p.pred }}</strong>
+                  </div>
+                  <div style="color:var(--muted);font-size:0.8rem">·</div>
+                  <div>
+                    <div style="font-size:0.7rem;color:var(--muted);line-height:1">real</div>
+                    <strong style="font-size:1rem">{{ p.real }}</strong>
+                  </div>
+                </div>
+                <div style="display:flex;align-items:center;gap:5px;flex:1;min-width:0">
+                  <span :class="`fi fi-${p.awayFl} flag-sm`"></span>
+                  <span style="font-size:0.85rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ p.away }}</span>
+                </div>
+              </div>
+              <div style="text-align:right;margin-top:4px">
+                <span v-if="p.points > 0" class="pts-badge">+{{ p.points }} pts</span>
+                <span v-else-if="p.real !== 'Pend.'" style="font-size:0.75rem;color:var(--muted)">0 pts</span>
+              </div>
+            </div>
+          </div>
         </div>
 
       </div>

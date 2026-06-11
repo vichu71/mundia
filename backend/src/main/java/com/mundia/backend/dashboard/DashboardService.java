@@ -167,6 +167,7 @@ public class DashboardService {
         return jdbcTemplate.query("""
                 SELECT
                   ROW_NUMBER() OVER (ORDER BY points DESC, u.display_name ASC) pos,
+                  pm.id member_id,
                   u.display_name name,
                   COALESCE(points, 0) points,
                   COALESCE(exact, 0) exact,
@@ -195,6 +196,7 @@ public class DashboardService {
                 ORDER BY points DESC, u.display_name ASC
                 """, (rs, rowNum) -> new RankingDto(
                 rs.getInt("pos"),
+                rs.getLong("member_id"),
                 rs.getString("name"),
                 initials(rs.getString("name")),
                 rs.getInt("points"),

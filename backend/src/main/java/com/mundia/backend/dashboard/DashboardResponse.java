@@ -47,6 +47,7 @@ public record DashboardResponse(
 
     public record RankingDto(
             int pos,
+            long memberId,
             String name,
             String avatar,
             int points,

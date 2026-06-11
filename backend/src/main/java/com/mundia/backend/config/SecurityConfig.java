@@ -53,7 +53,7 @@ public class SecurityConfig {
                         // Los errores (400/409/...) se redespachan a /error; permitirlos
                         // para que conserven su código real en vez de enmascararse como 401.
                         .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
-                        .requestMatchers("/error", "/actuator/health").permitAll()
+                        .requestMatchers("/error", "/actuator/health", "/api/version").permitAll()
                         .anyRequest().authenticated()
                 )
                 .oauth2ResourceServer(oauth2 -> oauth2
