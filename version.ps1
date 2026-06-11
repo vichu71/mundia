@@ -15,21 +15,20 @@ if ($Version -notmatch "^\d+\.\d+\.\d+$") {
 
 Write-Host "Aplicando version $Version..." -ForegroundColor Yellow
 
-# (Get-Location).Path siempre devuelve ruta Windows correcta desde Git Bash
-$ROOT = (Get-Location).Path
-$POM  = Join-Path $ROOT "backend\pom.xml"
-$PKG  = Join-Path $ROOT "frontend\package.json"
+$ROOT    = (Get-Location).Path
+$pomPath = Join-Path $ROOT "backend\pom.xml"
+$pkgPath = Join-Path $ROOT "frontend\package.json"
 
 # pom.xml — solo la version del proyecto
-$pom = Get-Content -LiteralPath $POM -Raw
-$pom = $pom -replace '(<artifactId>backend</artifactId>\s*<version>)\d+\.\d+\.\d+(</version>)', "`${1}$Version`${2}"
-Set-Content -LiteralPath $POM -Value $pom
+$pomXml = Get-Content -LiteralPath $pomPath -Raw
+$pomXml = $pomXml -replace '(<artifactId>backend</artifactId>\s*<version>)\d+\.\d+\.\d+(</version>)', "`${1}$Version`${2}"
+Set-Content -LiteralPath $pomPath -Value $pomXml
 Write-Host "  pom.xml actualizado" -ForegroundColor Green
 
 # package.json
-$pkg = Get-Content -LiteralPath $PKG -Raw | ConvertFrom-Json
-$pkg.version = $Version
-$pkg | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $PKG
+$pkgObj = Get-Content -LiteralPath $pkgPath -Raw | ConvertFrom-Json
+$pkgObj.version = $Version
+$pkgObj | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $pkgPath
 Write-Host "  package.json actualizado" -ForegroundColor Green
 
 # git
