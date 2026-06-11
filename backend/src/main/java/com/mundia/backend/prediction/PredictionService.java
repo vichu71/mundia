@@ -151,15 +151,18 @@ public class PredictionService {
                   m.status,
                   m.kickoff_at,
                   r.name        AS round_name,
-                  COALESCE(sb.points, 0) AS points
+                  COALESCE(sb.total_points, 0) AS points
                 FROM prediction_sets ps
                 JOIN match_predictions mp ON mp.prediction_set_id = ps.id
                 JOIN matches m            ON m.id = mp.match_id
                 JOIN teams ht             ON ht.id = m.home_team_id
                 JOIN teams at             ON at.id = m.away_team_id
                 JOIN rounds r             ON r.id = m.round_id
-                LEFT JOIN score_breakdowns sb
-                       ON sb.prediction_set_id = ps.id AND sb.match_id = m.id
+                LEFT JOIN (
+                  SELECT prediction_set_id, match_id, SUM(points) AS total_points
+                  FROM score_breakdowns
+                  GROUP BY prediction_set_id, match_id
+                ) sb ON sb.prediction_set_id = ps.id AND sb.match_id = m.id
                 WHERE ps.pool_member_id = ?
                   AND ps.type = 'LIVE'
                   AND (m.status IN ('LIVE','CLOSED','FINISHED') OR m.kickoff_at <= NOW())
