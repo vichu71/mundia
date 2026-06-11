@@ -35,6 +35,8 @@ public record DashboardResponse(
             String pred,
             String real,
             Integer points,
+            String scoreType,
+            String scoreNote,
             String status,
             String statusType,
             String note,

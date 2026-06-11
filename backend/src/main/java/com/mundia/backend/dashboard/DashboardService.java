@@ -108,6 +108,28 @@ public class DashboardService {
                     return null;
                 }, userId, poolId);
 
+        // Per-match score breakdown for this user
+        java.util.Map<Long, List<String>> matchScoreLines = new java.util.HashMap<>();
+        java.util.Map<Long, Integer> matchTotalPoints = new java.util.HashMap<>();
+        java.util.Map<Long, Boolean> matchHasExact = new java.util.HashMap<>();
+        jdbcTemplate.query("""
+                SELECT sb.match_id, sb.category, sb.points
+                FROM score_breakdowns sb
+                JOIN prediction_sets ps ON ps.id = sb.prediction_set_id
+                JOIN pool_members pm    ON pm.id = ps.pool_member_id
+                WHERE pm.user_id = ? AND pm.pool_id = ? AND ps.type = 'LIVE' AND sb.match_id IS NOT NULL
+                """,
+                (rs, i) -> {
+                    long mid = rs.getLong("match_id");
+                    String cat = rs.getString("category");
+                    int pts = rs.getInt("points");
+                    matchScoreLines.computeIfAbsent(mid, k -> new ArrayList<>())
+                            .add(categoryLabel(cat) + " +" + pts);
+                    matchTotalPoints.merge(mid, pts, Integer::sum);
+                    if ("EXACT_RESULT".equals(cat) && pts > 0) matchHasExact.put(mid, true);
+                    return null;
+                }, userId, poolId);
+
         return jdbcTemplate.query("""
                 SELECT
                   m.id,
@@ -143,6 +165,19 @@ public class DashboardService {
             String pred   = userPreds.getOrDefault(matchId, "? - ?");
             java.sql.Timestamp kickoffTs = rs.getTimestamp("kickoff_at");
             String kickoff = kickoffTs != null ? kickoffTs.toInstant().toString() : null;
+
+            boolean hasScore = matchScoreLines.containsKey(matchId);
+            Integer totalPts = hasScore ? matchTotalPoints.getOrDefault(matchId, 0) : null;
+            String scoreType = null;
+            String scoreNote = null;
+            if (hasScore) {
+                boolean isExact = Boolean.TRUE.equals(matchHasExact.get(matchId));
+                scoreType = (totalPts != null && totalPts > 0 && isExact) ? "exact"
+                          : (totalPts != null && totalPts > 0)            ? "partial"
+                          : "zero";
+                scoreNote = String.join(" · ", matchScoreLines.get(matchId));
+            }
+
             return new MatchDto(
                     matchId,
                     rs.getString("home"),
@@ -151,7 +186,9 @@ public class DashboardService {
                     rs.getString("away_fl"),
                     pred,
                     real,
-                    null,
+                    totalPts,
+                    scoreType,
+                    scoreNote,
                     matchStatusLabel(status),
                     matchStatusType(status),
                     matchNote(rs.getString("result_source"), homeGoals, awayGoals),
@@ -161,6 +198,16 @@ public class DashboardService {
                     rs.getString("stage")
             );
         }, sourceFilter);
+    }
+
+    private static String categoryLabel(String cat) {
+        return switch (cat) {
+            case "EXACT_RESULT" -> "Exacto";
+            case "WINNER"       -> "Ganador";
+            case "HOME_GOALS"   -> "Goles local";
+            case "AWAY_GOALS"   -> "Goles visitante";
+            default -> cat;
+        };
     }
 
     private List<RankingDto> findRanking(long poolId) {

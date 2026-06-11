@@ -1,0 +1,16 @@
+.git
+.gitignore
+target/
+*.class
+*.jar
+*.log
+.DS_Store
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+.vscode/
+.idea/
+*.iml

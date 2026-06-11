@@ -32,7 +32,7 @@ import {
 type TabId = 'home' | 'matches' | 'bracket' | 'ranking' | 'prizes' | 'admin'
 
 type Pool = { id: number; name: string; code: string; status: string; statusType: string; userRole: string; members: number; paid: number; pot: number }
-type Match = { id: number; home: string; away: string; homeFl: string; awayFl: string; pred: string; real: string; points: number | null; status: string; statusType: string; note: string; kickoff: string | null; source: string | null; roundName: string | null; stage: string | null }
+type Match = { id: number; home: string; away: string; homeFl: string; awayFl: string; pred: string; real: string; points: number | null; scoreType: string | null; scoreNote: string | null; status: string; statusType: string; note: string; kickoff: string | null; source: string | null; roundName: string | null; stage: string | null }
 type RankingRow = { pos: number; memberId: number; name: string; avatar: string; points: number; exact: number; winners: number; prize: number; delta: string; alive: boolean }
 type InitialRankingRow = { pos: number; name: string; points: number; exact: number; winners: number; bonus: string }
 type PrizeRow = { label: string; amount: number; state: string; stateType: string; contenders: number; pct: number }
@@ -857,10 +857,10 @@ async function saveBracketPreds() {
 }
 
 const matches = ref<Match[]>([
-  { id: 1, home: 'Espana',    away: 'Alemania',  homeFl: 'es',     awayFl: 'de',     pred: '0 - 0', real: 'Pend.', points: null, status: 'Abierto', statusType: 'open', note: 'Partido de prueba.', kickoff: null, source: null, roundName: 'Group A', stage: 'GROUP_STAGE' },
-  { id: 2, home: 'Brasil',    away: 'Portugal',  homeFl: 'br',     awayFl: 'pt',     pred: '0 - 0', real: 'Pend.', points: null, status: 'Abierto', statusType: 'open', note: 'Pendiente de sincronizar.', kickoff: null, source: null, roundName: 'Group A', stage: 'GROUP_STAGE' },
-  { id: 3, home: 'Argentina', away: 'Francia',   homeFl: 'ar',     awayFl: 'fr',     pred: '0 - 0', real: 'Pend.', points: null, status: 'Abierto', statusType: 'open', note: 'Editable.', kickoff: null, source: null, roundName: 'Group B', stage: 'GROUP_STAGE' },
-  { id: 4, home: 'Inglaterra',away: 'Italia',    homeFl: 'gb-eng', awayFl: 'it',     pred: '0 - 0', real: 'Pend.', points: null, status: 'Abierto', statusType: 'open', note: 'Sin puntos todavia.', kickoff: null, source: null, roundName: 'Group B', stage: 'GROUP_STAGE' },
+  { id: 1, home: 'Espana',    away: 'Alemania',  homeFl: 'es',     awayFl: 'de',     pred: '0 - 0', real: 'Pend.', points: null, scoreType: null, scoreNote: null, status: 'Abierto', statusType: 'open', note: 'Partido de prueba.', kickoff: null, source: null, roundName: 'Group A', stage: 'GROUP_STAGE' },
+  { id: 2, home: 'Brasil',    away: 'Portugal',  homeFl: 'br',     awayFl: 'pt',     pred: '0 - 0', real: 'Pend.', points: null, scoreType: null, scoreNote: null, status: 'Abierto', statusType: 'open', note: 'Pendiente de sincronizar.', kickoff: null, source: null, roundName: 'Group A', stage: 'GROUP_STAGE' },
+  { id: 3, home: 'Argentina', away: 'Francia',   homeFl: 'ar',     awayFl: 'fr',     pred: '0 - 0', real: 'Pend.', points: null, scoreType: null, scoreNote: null, status: 'Abierto', statusType: 'open', note: 'Editable.', kickoff: null, source: null, roundName: 'Group B', stage: 'GROUP_STAGE' },
+  { id: 4, home: 'Inglaterra',away: 'Italia',    homeFl: 'gb-eng', awayFl: 'it',     pred: '0 - 0', real: 'Pend.', points: null, scoreType: null, scoreNote: null, status: 'Abierto', statusType: 'open', note: 'Sin puntos todavia.', kickoff: null, source: null, roundName: 'Group B', stage: 'GROUP_STAGE' },
 ])
 
 const ranking = ref<RankingRow[]>([
@@ -2467,13 +2467,13 @@ watch(activePool, async () => {
             <!-- Partidos del grupo -->
             <div v-show="!isCollapsed(group.roundName)" class="match-group__body">
               <div class="matches-grid">
-                <article v-for="m in group.matches" :key="m.id" class="match-card">
+                <article v-for="m in group.matches" :key="m.id" :class="['match-card', m.scoreType && `match-card--${m.scoreType}`]">
                   <div class="match-card__top">
                     <span :class="['badge', isPredictionClosed(m.kickoff) ? 'badge--closed' : `badge--${m.statusType}`]">
                       {{ isPredictionClosed(m.kickoff) ? 'Cerrado' : m.status }}
                     </span>
                     <span class="match-kickoff">{{ fmtKickoff(m.kickoff) }}</span>
-                    <strong v-if="m.points !== null" class="pts-badge">+{{ m.points }} pts</strong>
+                    <strong v-if="m.points !== null" :class="['pts-badge', m.scoreNote && 'pts-badge--tip']" :data-tip="m.scoreNote ?? undefined">+{{ m.points }} pts</strong>
                   </div>
                   <div class="match-card__duel">
                     <div class="match-team">
