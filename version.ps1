@@ -15,14 +15,14 @@ if ($Version -notmatch "^\d+\.\d+\.\d+$") {
 
 Write-Host "Aplicando version $Version..." -ForegroundColor Yellow
 
-$ROOT    = Split-Path -Parent $MyInvocation.MyCommand.Path
-$POM     = Join-Path $ROOT "backend\pom.xml"
-$PKG     = Join-Path $ROOT "frontend\package.json"
+$ROOT = $PSScriptRoot
+$POM  = "$ROOT\backend\pom.xml"
+$PKG  = "$ROOT\frontend\package.json"
 
 # pom.xml
 $pom = Get-Content $POM -Raw
 $pom = $pom -replace '<version>\d+\.\d+\.\d+</version>', "<version>$Version</version>"
-[System.IO.File]::WriteAllText($POM, $pom, [System.Text.Encoding]::UTF8)
+Set-Content -Path $POM -Value $pom -Encoding UTF8 -NoNewline
 Write-Host "  pom.xml actualizado" -ForegroundColor Green
 
 # package.json
