@@ -19,9 +19,10 @@ $ROOT = $PSScriptRoot
 $POM  = Join-Path $ROOT "backend\pom.xml"
 $PKG  = Join-Path $ROOT "frontend\package.json"
 
-# pom.xml — sustituir la etiqueta <version>
-(Get-Content $POM) -replace '<version>\d+\.\d+\.\d+</version>', "<version>$Version</version>" |
-    Out-File $POM -Encoding utf8
+# pom.xml — solo la version del proyecto (la que sigue a <artifactId>backend</artifactId>)
+$pom = Get-Content $POM -Raw
+$pom = $pom -replace '(<artifactId>backend</artifactId>\s*<version>)\d+\.\d+\.\d+(</version>)', "`${1}$Version`${2}"
+$pom | Out-File $POM -Encoding utf8
 Write-Host "  pom.xml actualizado" -ForegroundColor Green
 
 # package.json
