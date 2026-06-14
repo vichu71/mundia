@@ -29,6 +29,20 @@ public class ScoringService {
      */
     @Transactional
     public int recalculateAll() {
+        // Purga breakdowns de partidos que ya NO están en estado puntuable
+        // (resultado retirado / partido reabierto). El bucle de abajo solo revisita
+        // los partidos actualmente cerrados, así que sin esto los breakdowns de un
+        // 0-0 que luego desapareció seguirían sumando en el ranking.
+        jdbc.update("""
+                DELETE FROM score_breakdowns
+                WHERE match_id IS NOT NULL
+                  AND match_id NOT IN (
+                    SELECT id FROM matches
+                    WHERE home_goals IS NOT NULL AND away_goals IS NOT NULL
+                      AND status IN ('CLOSED', 'FINISHED')
+                  )
+                """);
+
         List<Long> closedMatchIds = jdbc.query("""
                 SELECT id FROM matches
                 WHERE home_goals IS NOT NULL AND away_goals IS NOT NULL
@@ -70,7 +84,12 @@ public class ScoringService {
                 (rs, i) -> new int[]{ rs.getInt("home_goals"), rs.getInt("away_goals") },
                 matchId);
 
-        if (results.isEmpty()) return 0;
+        if (results.isEmpty()) {
+            // Sin resultado válido (retirado/reabierto): limpia cualquier breakdown previo
+            // de este partido para que no quede puntuando un resultado que ya no existe.
+            jdbc.update("DELETE FROM score_breakdowns WHERE match_id = ?", matchId);
+            return 0;
+        }
         int realHome = results.get(0)[0];
         int realAway = results.get(0)[1];
         int realSign = Integer.signum(realHome - realAway);
@@ -90,10 +109,11 @@ public class ScoringService {
                         rs.getString("type")),
                 matchId);
 
-        for (PredRow pred : preds) {
-            jdbc.update("DELETE FROM score_breakdowns WHERE match_id = ? AND prediction_set_id = ?",
-                    matchId, pred.predSetId());
+        // Limpieza única: borra TODOS los breakdowns de este partido (incluye huérfanos
+        // de sets que ya no lo predicen). No toca breakdowns de campeón (match_id IS NULL).
+        jdbc.update("DELETE FROM score_breakdowns WHERE match_id = ?", matchId);
 
+        for (PredRow pred : preds) {
             int predSign = Integer.signum(pred.homeGoals() - pred.awayGoals());
             boolean correctWinner = realSign == predSign;
             boolean exactResult   = pred.homeGoals() == realHome && pred.awayGoals() == realAway;

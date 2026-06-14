@@ -266,6 +266,7 @@ async function handleGoogleCredential(response: { credential: string }) {
     await loadRemoteState()
     animateHero()
     setTimeout(() => { animateCards('.pool-pill', 80); animateCards('.home-grid > *', 70) }, 100)
+    maybeShowWelcome()
   }
 }
 
@@ -315,7 +316,7 @@ async function emailLogin() {
     authToken.value = data.token
     localStorage.setItem(JWT_KEY, data.token)
     await loadMe()
-    if (userPools.value.length > 0) { await loadRemoteState(); animateHero() }
+    if (userPools.value.length > 0) { await loadRemoteState(); animateHero(); maybeShowWelcome() }
   } finally {
     emailForm.value.loading = false
   }
@@ -344,7 +345,7 @@ async function emailRegister() {
     authToken.value = data.token
     localStorage.setItem(JWT_KEY, data.token)
     await loadMe()
-    if (userPools.value.length > 0) { await loadRemoteState(); animateHero() }
+    if (userPools.value.length > 0) { await loadRemoteState(); animateHero(); maybeShowWelcome() }
   } finally {
     emailForm.value.loading = false
   }
@@ -388,6 +389,22 @@ async function createPool() {
 const activeTab   = ref<TabId>('home')
 const activePool  = ref<number | null>(null)
 const showHelp    = ref(false)
+const HELP_SEEN_KEY = 'mundia-help-seen'
+const helpSeen = ref(!!localStorage.getItem(HELP_SEEN_KEY))
+
+function maybeShowWelcome() {
+  if (!localStorage.getItem(HELP_SEEN_KEY)) showHelp.value = true
+}
+
+function onHelpSeenChange(e: Event) {
+  if ((e.target as HTMLInputElement).checked) {
+    localStorage.setItem(HELP_SEEN_KEY, '1')
+    helpSeen.value = true
+  } else {
+    localStorage.removeItem(HELP_SEEN_KEY)
+    helpSeen.value = false
+  }
+}
 
 // ─── Simulator ───────────────────────────────────────────────────────────────
 type SimDayInfo = { day: number; date: string; matches: number; done: boolean }
@@ -494,9 +511,23 @@ const nextMatch      = computed(() =>
   ?? matches.value.find(m => m.statusType === 'open' || m.statusType === 'warning')
   ?? matches.value[0] ?? null
 )
+const liveMatch      = computed(() =>
+  matches.value.find(m => m.statusType === 'warning') ?? null
+)
 const myRanking      = computed(() =>
   ranking.value.find(r => r.name === currentUser.value?.name) ?? ranking.value[0] ?? null
 )
+const plenoRow       = computed(() => prizeRows.value.find(r => r.label === 'Pleno de ganadores'))
+const plenoAlive     = computed(() => plenoRow.value?.stateType === 'active' || plenoRow.value?.stateType === 'pending')
+const plenoSurvivors = computed(() => {
+  const row = plenoRow.value
+  if (!row || row.contenders === 0 || !row.state || row.state === 'Pendiente' || row.state === 'Extinto') return []
+  return row.state.split(', ').map(name => {
+    const parts = name.trim().split(' ')
+    const initials = (parts[0][0] + (parts[1]?.[0] ?? '')).toUpperCase()
+    return { name, initials }
+  })
+})
 const pendingCount   = computed(() =>
   // Solo cuenta partidos que aún se pueden predecir (corte no pasado). Uno en juego
   // o cerrado ya no es "pendiente": no se puede hacer nada con él.
@@ -862,6 +893,10 @@ const matches = ref<Match[]>([
   { id: 3, home: 'Argentina', away: 'Francia',   homeFl: 'ar',     awayFl: 'fr',     pred: '0 - 0', real: 'Pend.', points: null, scoreType: null, scoreNote: null, status: 'Abierto', statusType: 'open', note: 'Editable.', kickoff: null, source: null, roundName: 'Group B', stage: 'GROUP_STAGE', elapsed: null, statusShort: null },
   { id: 4, home: 'Inglaterra',away: 'Italia',    homeFl: 'gb-eng', awayFl: 'it',     pred: '0 - 0', real: 'Pend.', points: null, scoreType: null, scoreNote: null, status: 'Abierto', statusType: 'open', note: 'Sin puntos todavia.', kickoff: null, source: null, roundName: 'Group B', stage: 'GROUP_STAGE', elapsed: null, statusShort: null },
 ])
+
+const newsItems        = ref<string[]>([])
+const newsLoading      = ref(false)
+const newsGeneratedAt  = ref<string | null>(null)
 
 const ranking = ref<RankingRow[]>([
   { pos: 1, memberId: 0, name: 'Diego',    avatar: 'DI', points: 0, exact: 0, winners: 0, prize: 0, delta: '=', alive: true },
@@ -1667,7 +1702,7 @@ function animateHero() {
     const potEl   = document.querySelector<HTMLElement>('.js-counter-pot')
     const prizeEl = document.querySelector<HTMLElement>('.js-counter-prize')
     if (potEl)   animateCounter(potEl, selectedPool.value?.pot ?? 0, ' €')
-    if (prizeEl) animateCounter(prizeEl, 0, ' €')
+    if (prizeEl) animateCounter(prizeEl, myRanking.value?.prize ?? 0, ' €')
   })
 }
 
@@ -1740,6 +1775,33 @@ async function loadDashboard() {
     })),
   }))
   if (pools.value.length > 0 && !activePool.value) activePool.value = pools.value[0].id
+  loadNews()  // async, no await — news load in background
+}
+
+async function loadNews(forceRefresh = false) {
+  if (!activePoolId.value) return
+  newsLoading.value = true
+  try {
+    const url = `${API_BASE_URL}/feed/${activePoolId.value}${forceRefresh ? '?refresh=true' : ''}`
+    const res = await fetchWithAuth(url)
+    if (!res.ok) return
+    const data = await res.json()
+    newsItems.value = data.items ?? []
+    newsGeneratedAt.value = data.generatedAt ?? null
+  } catch (e) {
+    // silently ignore — news are non-critical
+  } finally {
+    newsLoading.value = false
+  }
+}
+
+function fmtNewsAge(iso: string | null): string {
+  if (!iso) return ''
+  const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 60000)
+  if (diff < 1) return 'Ahora mismo'
+  if (diff === 1) return 'Hace 1 min'
+  if (diff < 60) return `Hace ${diff} min`
+  return `Hace ${Math.floor(diff / 60)}h`
 }
 
 async function loadApiSyncStatus() {
@@ -1898,6 +1960,7 @@ onMounted(async () => {
         animateCards('.bracket-section', 0)
       }, 100)
       // El campeón se sincroniza automáticamente desde la Final predicha (syncAutoChampion)
+      maybeShowWelcome()
     }
   } else {
     initGoogleAuth()
@@ -2131,6 +2194,31 @@ watch(activePool, async () => {
         </template>
       </div>
 
+      <!-- Partido en vivo -->
+      <div v-if="liveMatch" class="live-match-banner">
+        <!-- Fila 1: badge + minuto -->
+        <div class="live-match-banner__top">
+          <span class="pulse-dot" aria-hidden="true"></span>
+          <span class="live-match-banner__label">EN VIVO</span>
+          <span v-if="liveMatch.elapsed != null" class="live-match-banner__elapsed">· {{ liveMatch.elapsed }}'</span>
+          <span v-else-if="liveMatch.statusShort === 'HT'" class="live-match-banner__elapsed">· Descanso</span>
+        </div>
+        <!-- Fila 2: partido + pred -->
+        <div class="live-match-banner__body">
+          <div class="live-match-banner__duel">
+            <span :class="`fi fi-${liveMatch.homeFl}`"></span>
+            <span class="live-match-banner__team">{{ liveMatch.home }}</span>
+            <span class="live-match-banner__score">{{ liveMatch.real }}</span>
+            <span class="live-match-banner__team">{{ liveMatch.away }}</span>
+            <span :class="`fi fi-${liveMatch.awayFl}`"></span>
+          </div>
+          <div class="live-match-banner__pred-wrap">
+            <span class="live-match-banner__pred-label">pred</span>
+            <span class="live-match-banner__pred">{{ liveMatch.pred }}</span>
+          </div>
+        </div>
+      </div>
+
       <!-- Fila 2: Scoreboard + Próximo partido -->
       <div class="hero-bottom-row">
         <div class="scoreboard-card">
@@ -2145,7 +2233,7 @@ watch(activePool, async () => {
             </div>
             <div class="stat-box stat-box--green">
               <p>Premio posible</p>
-              <strong class="js-counter-prize">0 €</strong>
+              <strong class="js-counter-prize">{{ myRanking?.prize ?? 0 }} €</strong>
             </div>
           </div>
           <div class="scoreboard-card__footer">
@@ -2321,46 +2409,37 @@ watch(activePool, async () => {
         <!-- Dos tarjetas acción -->
         <div class="home-actions">
 
-          <!-- Próximo partido -->
-          <article class="panel home-action-card" v-if="nextMatch">
+          <!-- Noticias IA -->
+          <article class="panel news-ticker-card">
             <div class="panel__header">
-              <Zap :size="16" />
-              <h2>Próximo partido</h2>
-              <span v-if="nextMatch.statusType === 'warning'" class="match-live-time" style="margin-left:auto">
-                <span class="pulse-dot" aria-hidden="true"></span>
-                {{ fmtElapsed(nextMatch) }}
-              </span>
-              <span v-else class="match-kickoff" style="margin-left:auto">{{ fmtKickoff(nextMatch.kickoff) }}</span>
+              <span style="font-size:1rem">📰</span>
+              <h2>Noticias de la porra</h2>
+              <button
+                class="btn btn--ghost btn--sm"
+                style="margin-left:auto"
+                type="button"
+                :disabled="newsLoading"
+                @click="loadNews(true)"
+                title="Actualizar noticias"
+              >
+                <RefreshCw :size="13" :class="{ 'spin': newsLoading }" />
+              </button>
             </div>
-            <div class="home-match-duel">
-              <div class="team-block">
-                <span :class="`fi fi-${displayTeams(nextMatch).homeFl} flag-xl`"></span>
-                <strong>{{ displayTeams(nextMatch).home }}</strong>
-              </div>
-              <div class="vs-block">
-                <span class="vs-label">VS</span>
-                <span :class="['badge', `badge--${nextMatch.statusType}`]">{{ nextMatch.status }}</span>
-              </div>
-              <div class="team-block">
-                <span :class="`fi fi-${displayTeams(nextMatch).awayFl} flag-xl`"></span>
-                <strong>{{ displayTeams(nextMatch).away }}</strong>
-              </div>
+            <ul v-if="!newsLoading && newsItems.length > 0" class="news-ticker-list">
+              <li
+                v-for="(item, i) in newsItems"
+                :key="i"
+                class="news-ticker-item"
+                :style="`animation-delay:${i * 70}ms`"
+              >{{ item }}</li>
+            </ul>
+            <div v-else-if="newsLoading" class="news-skeleton">
+              <div v-for="n in 5" :key="n" class="news-skeleton__line" :style="`width:${65 + (n % 3) * 12}%`"></div>
             </div>
-            <div class="next-match-card__pred">
-              <span>Tu predicción</span>
-              <strong>{{ nextMatch.pred }}</strong>
-            </div>
-            <button
-              class="btn btn--sm"
-              :class="(isPredictionClosed(nextMatch.kickoff) || isGroupMatchLocked(nextMatch)) ? 'btn--outline' : 'btn--primary'"
-              type="button"
-              :disabled="isPredictionClosed(nextMatch.kickoff) || isGroupMatchLocked(nextMatch)"
-              @click="openPredModal(nextMatch)"
-            >
-              <Lock v-if="isPredictionClosed(nextMatch.kickoff) || isGroupMatchLocked(nextMatch)" :size="14" />
-              <Pencil v-else :size="14" />
-              {{ isPredictionClosed(nextMatch.kickoff) ? 'Predicción cerrada' : isGroupMatchLocked(nextMatch) ? 'Fase de grupos bloqueada' : 'Editar predicción' }}
-            </button>
+            <p v-else class="news-ticker-empty">Cargando noticias…</p>
+            <p v-if="newsGeneratedAt && !newsLoading" class="news-ticker-ts">
+              {{ fmtNewsAge(newsGeneratedAt) }}
+            </p>
           </article>
 
           <!-- Pendientes -->
@@ -2777,29 +2856,31 @@ watch(activePool, async () => {
             <div class="panel__header">
               <Crown :size="18" />
               <h2>Pleno de Ganadores</h2>
-              <span class="badge badge--alive tag--xs">Vivo</span>
+              <span :class="['badge', 'tag--xs', plenoAlive ? 'badge--alive' : 'badge--closed']">
+                {{ plenoAlive ? 'Vivo' : 'Extinto' }}
+              </span>
             </div>
-            <p class="prize-amount">0 €</p>
-            <p class="muted">Acertar todos los ganadores y avances. Los marcadores exactos <strong>no</strong> eliminan del pleno.</p>
-            <div class="pleno-survivors">
-              <div v-for="n in ['FE','DI','SO']" :key="n" class="survivor-avatar">{{ n }}</div>
-              <span class="muted">0 participantes vivos</span>
-            </div>
-          </article>
-
-          <article class="panel panel--simulator">
-            <div class="panel__header"><Sparkles :size="18" /><h2>Simulador · Tu premio máximo</h2></div>
-            <div class="simulator-grid">
-              <div class="sim-box"><span>Posición actual</span><strong>2º</strong></div>
-              <div class="sim-box"><span>Mejor posible</span><strong>1º</strong></div>
-              <div class="sim-box sim-box--gold"><span>Premio actual</span><strong>0 €</strong></div>
-              <div class="sim-box sim-box--green"><span>Premio maximo</span><strong>0 €</strong></div>
-            </div>
-            <div class="tag-row" style="margin-top:14px">
-              <span class="tag tag--green">✓ Clasif. general</span>
-              <span class="tag tag--green">✓ Pleno vivo</span>
-              <span class="tag tag--green">✓ Exactos</span>
-              <span class="tag tag--muted">✗ Campeón (perdiste)</span>
+            <div class="pleno-body">
+              <div class="pleno-left">
+                <p class="prize-amount">{{ plenoRow?.amount ?? 0 }} €</p>
+                <p class="muted" style="margin-top:6px">Acertar todos los ganadores y avances.<br>Los marcadores exactos <strong>no</strong> eliminan del pleno.</p>
+              </div>
+              <div class="pleno-right">
+                <template v-if="plenoSurvivors.length > 0">
+                  <div class="pleno-alive-list">
+                    <div v-for="s in plenoSurvivors" :key="s.name" class="pleno-alive-player">
+                      <div class="survivor-avatar survivor-avatar--lg">{{ s.initials }}</div>
+                      <span class="pleno-alive-name">{{ s.name }}</span>
+                    </div>
+                  </div>
+                  <p class="muted" style="margin-top:8px;font-size:0.78rem">
+                    {{ plenoSurvivors.length }} {{ plenoSurvivors.length === 1 ? 'participante vivo' : 'participantes vivos' }}
+                  </p>
+                </template>
+                <span v-else class="muted" style="font-size:0.85rem">
+                  {{ plenoAlive ? 'Ningún participante vivo aún' : 'Pleno eliminado — bote redistribuido' }}
+                </span>
+              </div>
             </div>
           </article>
 
@@ -3635,6 +3716,11 @@ watch(activePool, async () => {
           </div>
 
         </div>
+
+        <label class="help-no-show">
+          <input type="checkbox" :checked="helpSeen" @change="onHelpSeenChange" />
+          No volver a mostrar al entrar
+        </label>
 
         <button class="btn btn--primary" style="width:100%;margin-top:4px" type="button" @click="showHelp = false">
           ¡Entendido, a predecir! 🚀

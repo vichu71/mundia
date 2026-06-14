@@ -229,6 +229,7 @@ public class PredictionController {
 
         // INITIAL set — reset to DRAFT so the user can redo the initial bet
         long initialSetId = predictionService.getOrCreateInitialSet(memberId);
+        jdbc.update("DELETE FROM score_breakdowns WHERE prediction_set_id = ?", initialSetId);
         jdbc.update("DELETE FROM match_predictions WHERE prediction_set_id = ?", initialSetId);
         jdbc.update("UPDATE prediction_sets SET status = 'DRAFT' WHERE id = ?", initialSetId);
     }
