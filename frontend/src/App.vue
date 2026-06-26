@@ -273,7 +273,7 @@ async function handleGoogleCredential(response: { credential: string }) {
 function initGoogleAuth() {
   const g = (window as any).google
   if (!g?.accounts?.id) { setTimeout(initGoogleAuth, 400); return }
-  g.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID, callback: handleGoogleCredential })
+  g.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID, callback: handleGoogleCredential, auto_select: false, cancel_on_tap_outside: true })
   const btn = document.getElementById('g_signin_btn')
   if (btn) {
     g.accounts.id.renderButton(btn, {
@@ -511,9 +511,17 @@ const nextMatch      = computed(() =>
   ?? matches.value.find(m => m.statusType === 'open' || m.statusType === 'warning')
   ?? matches.value[0] ?? null
 )
-const liveMatch      = computed(() =>
-  matches.value.find(m => m.statusType === 'warning') ?? null
+const liveMatches    = computed(() =>
+  matches.value.filter(m => m.statusType === 'warning')
 )
+const upcomingMatch  = computed(() => {
+  if (liveMatches.value.length > 0) return null  // si hay partido en juego, no mostrar el próximo
+  return matches.value.find(m => {
+    if (!m.kickoff || m.statusType !== 'open') return false
+    const minsUntil = (new Date(m.kickoff).getTime() - Date.now()) / 60000
+    return minsUntil >= 0 && minsUntil <= 60
+  }) ?? null
+})
 const myRanking      = computed(() =>
   ranking.value.find(r => r.name === currentUser.value?.name) ?? ranking.value[0] ?? null
 )
@@ -610,7 +618,7 @@ function computeGroupStandingsFromPreds(): Map<string, Array<PredTeamStat>> {
   // compute from prediction (or real result if available)
   for (const m of groupMatches) {
     const g = m.roundName?.replace(/^Group\s+/i, '') ?? ''
-    const src = (m.real && m.real !== 'Pend.' && !m.real.includes('?')) ? m.real : m.pred
+    const src = m.pred
     const score = parsePredScore(src ?? '')
     if (!score) continue
     const [hg, ag] = score
@@ -638,6 +646,41 @@ function computeGroupStandingsFromPreds(): Map<string, Array<PredTeamStat>> {
   return result
 }
 
+// Para el cascade del cuadro: usa resultado real si está disponible, si no la predicción
+function computeGroupStandingsForBracket(): Map<string, Array<PredTeamStat>> {
+  const result = new Map<string, Array<PredTeamStat>>()
+  const groupMatches = matches.value.filter(m => m.stage === 'GROUP_STAGE')
+  for (const m of groupMatches) {
+    const g = m.roundName?.replace(/^Group\s+/i, '') ?? ''
+    if (!g) continue
+    if (!result.has(g)) result.set(g, [])
+    const arr = result.get(g)!
+    if (!arr.find(t => t.name === m.home)) arr.push({ name: m.home, flag: m.homeFl, pts: 0, gf: 0, ga: 0, played: 0, won: 0, drawn: 0, lost: 0 })
+    if (!arr.find(t => t.name === m.away)) arr.push({ name: m.away, flag: m.awayFl, pts: 0, gf: 0, ga: 0, played: 0, won: 0, drawn: 0, lost: 0 })
+  }
+  for (const m of groupMatches) {
+    const g = m.roundName?.replace(/^Group\s+/i, '') ?? ''
+    const src = (m.real && m.real !== 'Pend.' && !m.real.includes('?')) ? m.real : m.pred
+    const score = parsePredScore(src ?? '')
+    if (!score) continue
+    const [hg, ag] = score
+    const arr = result.get(g)
+    if (!arr) continue
+    const home = arr.find(t => t.name === m.home)
+    const away = arr.find(t => t.name === m.away)
+    if (!home || !away) continue
+    home.gf += hg; home.ga += ag; home.played++
+    away.gf += ag; away.ga += hg; away.played++
+    if (hg > ag) { home.pts += 3; home.won++; away.lost++ }
+    else if (ag > hg) { away.pts += 3; away.won++; home.lost++ }
+    else { home.pts += 1; away.pts += 1; home.drawn++; away.drawn++ }
+  }
+  for (const [, arr] of result.entries()) {
+    arr.sort((a, b) => (b.pts - a.pts) || ((b.gf - b.ga) - (a.gf - a.ga)) || (b.gf - a.gf))
+  }
+  return result
+}
+
 // Group standings computed from predictions (for mini clasificacion in Partidos tab)
 const predStandingsMap = computed(() => computeGroupStandingsFromPreds())
 
@@ -645,6 +688,10 @@ function getPredStandings(roundName: string): PredTeamStat[] {
   // roundName from backend is e.g. "Group A"; key in map is "A"
   const key = roundName.replace(/^Group\s+/i, '')
   return predStandingsMap.value.get(key) ?? []
+}
+
+function getRealStandings(roundName: string): TeamStanding[] {
+  return groupStandings.value.find(g => g.roundName === roundName)?.teams ?? []
 }
 
 function bracketMatchWinner(m: BracketMatch): TeamInfo | null {
@@ -714,7 +761,7 @@ const bracketLevels = computed((): BracketLevel[] => {
     }
     return { name: '?', flag: 'un' }
   }
-  if (rounds[0]?.matches.length === 16) {
+  if (rounds[0]?.matches.length >= 16) {
     // Fixed 12 slots
     WC26_R32.forEach(([hg, hr, ag, ar], i) => {
       const m = rounds[0].matches[i]
@@ -1245,6 +1292,59 @@ const showInitialBetForced = computed(() =>
 // La apuesta inicial es OPCIONAL: el aviso se puede cerrar y jugar día a día.
 // (Antes te forzaba a la pestaña de partidos al entrar; ya no.)
 const initialBetDismissed = ref(false)
+
+// Slots del bracket rotos (equipo imposible) y afectados (hilo downstream)
+const bracketAlerts = computed((): { broken: Set<number>; dimmed: Set<number> } => {
+  const broken = new Set<number>()
+  const dimmed  = new Set<number>()
+  const levels  = bracketLevels.value
+  if (!levels.length) return { broken, dimmed }
+
+  const realStandings = computeGroupStandingsForBracket()
+
+  // Grupos terminados: todos sus equipos han jugado 3 partidos
+  const completedGroups = new Set<string>()
+  for (const [g, arr] of realStandings.entries()) {
+    if (arr.length >= 2 && arr.every(t => t.played === 3)) completedGroups.add(g)
+  }
+
+  // Mapa equipo → grupo (para saber a qué grupo pertenece un equipo predicho)
+  const teamToGroup = new Map<string, string>()
+  for (const [g, arr] of realStandings.entries()) {
+    for (const t of arr) teamToGroup.set(t.name, g)
+  }
+
+  // "levelIndex_matchIndex" → broken/affected para propagar
+  const affectedSlotKeys = new Set<string>()
+
+  const levelMatches = (li: number) =>
+    levels[li].pairs.flatMap(p => p.bottom ? [p.top, p.bottom] : [p.top])
+
+  // R32: detectar equipos imposibles
+  levelMatches(0).forEach((m, idx) => {
+    let isBroken = false
+    for (const teamName of [m.home, m.away]) {
+      if (!teamName || teamName === '?' || teamName === 'Pendiente') continue
+      const g = teamToGroup.get(teamName)
+      if (!g || !completedGroups.has(g)) continue
+      const top2 = [realStandings.get(g)?.[0]?.name, realStandings.get(g)?.[1]?.name]
+      if (!top2.includes(teamName)) { isBroken = true; break }
+    }
+    if (isBroken) { broken.add(m.matchId); affectedSlotKeys.add(`0_${idx}`) }
+  })
+
+  // Propagar a rondas siguientes
+  for (let li = 1; li < levels.length; li++) {
+    levelMatches(li).forEach((m, idx) => {
+      if (affectedSlotKeys.has(`${li - 1}_${idx * 2}`) || affectedSlotKeys.has(`${li - 1}_${idx * 2 + 1}`)) {
+        dimmed.add(m.matchId)
+        affectedSlotKeys.add(`${li}_${idx}`)
+      }
+    })
+  }
+
+  return { broken, dimmed }
+})
 
 // Winner predicho de la Final (el equipo que el cascade dice que ganará)
 const predFinalWinner = computed((): TeamInfo | null => {
@@ -1795,6 +1895,7 @@ async function loadNews(forceRefresh = false) {
   }
 }
 
+
 function fmtNewsAge(iso: string | null): string {
   if (!iso) return ''
   const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 60000)
@@ -2194,27 +2295,48 @@ watch(activePool, async () => {
         </template>
       </div>
 
-      <!-- Partido en vivo -->
-      <div v-if="liveMatch" class="live-match-banner">
-        <!-- Fila 1: badge + minuto -->
+      <!-- Partidos en vivo -->
+      <div v-if="liveMatches.length > 0" class="live-match-banner">
         <div class="live-match-banner__top">
           <span class="pulse-dot" aria-hidden="true"></span>
           <span class="live-match-banner__label">EN VIVO</span>
-          <span v-if="liveMatch.elapsed != null" class="live-match-banner__elapsed">· {{ liveMatch.elapsed }}'</span>
-          <span v-else-if="liveMatch.statusShort === 'HT'" class="live-match-banner__elapsed">· Descanso</span>
         </div>
-        <!-- Fila 2: partido + pred -->
-        <div class="live-match-banner__body">
+        <div v-for="m in liveMatches" :key="m.id" class="live-match-banner__body">
           <div class="live-match-banner__duel">
-            <span :class="`fi fi-${liveMatch.homeFl}`"></span>
-            <span class="live-match-banner__team">{{ liveMatch.home }}</span>
-            <span class="live-match-banner__score">{{ liveMatch.real }}</span>
-            <span class="live-match-banner__team">{{ liveMatch.away }}</span>
-            <span :class="`fi fi-${liveMatch.awayFl}`"></span>
+            <span :class="`fi fi-${m.homeFl}`"></span>
+            <span class="live-match-banner__team">{{ m.home }}</span>
+            <span class="live-match-banner__score">{{ m.real }}</span>
+            <span class="live-match-banner__team">{{ m.away }}</span>
+            <span :class="`fi fi-${m.awayFl}`"></span>
+            <span v-if="m.elapsed != null" class="live-match-banner__elapsed">{{ m.elapsed }}'</span>
+            <span v-else-if="m.statusShort === 'HT'" class="live-match-banner__elapsed">Desc.</span>
+            <span v-else-if="m.statusShort && /^\d/.test(m.statusShort)" class="live-match-banner__elapsed">{{ m.statusShort }}'</span>
           </div>
           <div class="live-match-banner__pred-wrap">
             <span class="live-match-banner__pred-label">pred</span>
-            <span class="live-match-banner__pred">{{ liveMatch.pred }}</span>
+            <span class="live-match-banner__pred">{{ m.pred }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Partido próximo (empieza en < 60 min) -->
+      <div v-else-if="upcomingMatch" class="live-match-banner live-match-banner--upcoming">
+        <div class="live-match-banner__top">
+          <Zap :size="11" style="color: var(--warning)" />
+          <span class="live-match-banner__label live-match-banner__label--upcoming">PRÓXIMO</span>
+          <span class="live-match-banner__elapsed">· {{ fmtKickoff(upcomingMatch.kickoff) }}</span>
+        </div>
+        <div class="live-match-banner__body">
+          <div class="live-match-banner__duel">
+            <span :class="`fi fi-${upcomingMatch.homeFl}`"></span>
+            <span class="live-match-banner__team">{{ upcomingMatch.home }}</span>
+            <span class="live-match-banner__score live-match-banner__score--upcoming">0 - 0</span>
+            <span class="live-match-banner__team">{{ upcomingMatch.away }}</span>
+            <span :class="`fi fi-${upcomingMatch.awayFl}`"></span>
+          </div>
+          <div class="live-match-banner__pred-wrap">
+            <span class="live-match-banner__pred-label">pred</span>
+            <span class="live-match-banner__pred">{{ upcomingMatch.pred }}</span>
           </div>
         </div>
       </div>
@@ -2553,29 +2675,51 @@ watch(activePool, async () => {
               </span>
             </button>
 
-            <!-- Mini clasificación (solo visible cuando colapsado y hay predicciones).
+            <!-- Mini clasificación (solo visible cuando colapsado).
                  También abre el grupo: en móvil es donde cae el dedo. -->
             <div
-              v-if="isCollapsed(group.roundName) && getPredStandings(group.roundName).length > 0"
-              class="match-group__standings"
+              v-if="isCollapsed(group.roundName) && group.stage === 'GROUP_STAGE' && (getPredStandings(group.roundName).length > 0 || getRealStandings(group.roundName).length > 0)"
+              class="match-group__standings-wrap"
               role="button"
               tabindex="0"
               @click="toggleGroup(group.roundName)"
               @keydown.enter="toggleGroup(group.roundName)"
             >
-              <div
-                v-for="(team, idx) in getPredStandings(group.roundName)"
-                :key="team.name"
-                :class="['standing-row', idx < 2 ? 'standing-row--qualify' : '']"
-              >
-                <span class="standing-pos">{{ idx + 1 }}</span>
-                <span :class="`fi fi-${team.flag} flag-xs`"></span>
-                <span class="standing-name">{{ team.name }}</span>
-                <span class="standing-stats">
-                  {{ team.played }}J &nbsp;{{ team.won }}G {{ team.drawn }}E {{ team.lost }}P
-                  &nbsp;{{ team.gf }}-{{ team.ga }}
-                </span>
-                <strong class="standing-pts">{{ team.pts }}pts</strong>
+              <!-- Predicción -->
+              <div v-if="getPredStandings(group.roundName).length > 0" class="match-group__standings">
+                <div class="standings-title">Mi predicción</div>
+                <div
+                  v-for="(team, idx) in getPredStandings(group.roundName)"
+                  :key="team.name"
+                  :class="['standing-row', idx < 2 ? 'standing-row--qualify' : idx === 2 ? 'standing-row--maybe' : '']"
+                >
+                  <span class="standing-pos">{{ idx + 1 }}</span>
+                  <span :class="`fi fi-${team.flag} flag-xs`"></span>
+                  <span class="standing-name">{{ team.name }}</span>
+                  <span class="standing-stats">
+                    {{ team.played }}J &nbsp;{{ team.won }}G {{ team.drawn }}E {{ team.lost }}P
+                    &nbsp;{{ team.gf }}-{{ team.ga }}
+                  </span>
+                  <strong class="standing-pts">{{ team.pts }}pts</strong>
+                </div>
+              </div>
+              <!-- Real -->
+              <div v-if="getRealStandings(group.roundName).length > 0" class="match-group__standings">
+                <div class="standings-title">Real</div>
+                <div
+                  v-for="(team, idx) in getRealStandings(group.roundName)"
+                  :key="team.name"
+                  :class="['standing-row', idx < 2 ? 'standing-row--qualify' : idx === 2 ? 'standing-row--maybe' : '']"
+                >
+                  <span class="standing-pos">{{ idx + 1 }}</span>
+                  <span :class="`fi fi-${team.flag} flag-xs`"></span>
+                  <span class="standing-name">{{ team.name }}</span>
+                  <span class="standing-stats">
+                    {{ team.played }}J &nbsp;{{ team.won }}G {{ team.drawn }}E {{ team.lost }}P
+                    &nbsp;{{ team.gf }}-{{ team.ga }}
+                  </span>
+                  <strong class="standing-pts">{{ team.points }}pts</strong>
+                </div>
               </div>
             </div>
 
@@ -2767,7 +2911,7 @@ watch(activePool, async () => {
                       <!-- top match -->
                       <div class="bracket-slot" :style="{ height: level.slotH + 'px' }">
                         <div
-                          :class="['bracket-mc', { 'bracket-mc--done': pair.top.done, 'bracket-mc--pred': !pair.top.done && pair.top.pred !== '?-?', 'bracket-mc--final': level.name === 'Final', 'bracket-mc--editable': isBracketMatchEditable(pair.top) }]"
+                          :class="['bracket-mc', { 'bracket-mc--done': pair.top.done, 'bracket-mc--pred': !pair.top.done && pair.top.pred !== '?-?', 'bracket-mc--final': level.name === 'Final', 'bracket-mc--editable': isBracketMatchEditable(pair.top), 'bracket-mc--broken': bracketAlerts.broken.has(pair.top.matchId), 'bracket-mc--dimmed': bracketAlerts.dimmed.has(pair.top.matchId) }]"
                           @click="openBracketPred(pair.top)"
                         >
                           <div :class="['bracket-tm', { 'bracket-tm--win': pair.top.done && pair.top.winner === pair.top.home }]">
@@ -2782,12 +2926,13 @@ watch(activePool, async () => {
                             <strong v-if="pair.top.done" class="bracket-tm__score">{{ pair.top.real.split('-')[1] }}</strong>
                             <span v-else-if="pair.top.pred !== '?-?'" class="bracket-tm__pred">{{ pair.top.pred.split('-')[1] }}</span>
                           </div>
+                          <span v-if="bracketAlerts.broken.has(pair.top.matchId)" class="bracket-mc__broken-icon" title="Predicción inválida: los equipos han cambiado">⚠️</span>
                         </div>
                       </div>
                       <!-- bottom match -->
                       <div v-if="pair.bottom" class="bracket-slot" :style="{ height: level.slotH + 'px' }">
                         <div
-                          :class="['bracket-mc', { 'bracket-mc--done': pair.bottom.done, 'bracket-mc--pred': !pair.bottom.done && pair.bottom.pred !== '?-?', 'bracket-mc--final': level.name === 'Final', 'bracket-mc--editable': isBracketMatchEditable(pair.bottom) }]"
+                          :class="['bracket-mc', { 'bracket-mc--done': pair.bottom.done, 'bracket-mc--pred': !pair.bottom.done && pair.bottom.pred !== '?-?', 'bracket-mc--final': level.name === 'Final', 'bracket-mc--editable': isBracketMatchEditable(pair.bottom), 'bracket-mc--broken': bracketAlerts.broken.has(pair.bottom.matchId), 'bracket-mc--dimmed': bracketAlerts.dimmed.has(pair.bottom.matchId) }]"
                           @click="openBracketPred(pair.bottom)"
                         >
                           <div :class="['bracket-tm', { 'bracket-tm--win': pair.bottom.done && pair.bottom.winner === pair.bottom.home }]">
@@ -2802,6 +2947,7 @@ watch(activePool, async () => {
                             <strong v-if="pair.bottom.done" class="bracket-tm__score">{{ pair.bottom.real.split('-')[1] }}</strong>
                             <span v-else-if="pair.bottom.pred !== '?-?'" class="bracket-tm__pred">{{ pair.bottom.pred.split('-')[1] }}</span>
                           </div>
+                          <span v-if="bracketAlerts.broken.has(pair.bottom.matchId)" class="bracket-mc__broken-icon" title="Predicción inválida: los equipos han cambiado">⚠️</span>
                         </div>
                       </div>
                     </div>

@@ -170,6 +170,7 @@ public class WorldCup26SyncService {
         // status mapping
         String status = mapStatus(finishedStr, timeElapsed);
         String statusShort = mapStatusShort(finishedStr, timeElapsed);
+        Integer elapsed = parseElapsed(timeElapsed);
 
         // goals (null if not started)
         boolean started = !"notstarted".equalsIgnoreCase(timeElapsed);
@@ -185,25 +186,26 @@ public class WorldCup26SyncService {
         boolean knockout = !"group".equalsIgnoreCase(type);
         if (knockout) {
             upsertKnockoutGame(extFixtureId, roundId, homeTeamId, awayTeamId,
-                    kickoff, status, statusShort, homeGoals, awayGoals);
+                    kickoff, status, statusShort, elapsed, homeGoals, awayGoals);
             return true;
         }
 
         jdbc.update("""
                 INSERT INTO matches
                   (external_fixture_id, round_id, home_team_id, away_team_id,
-                   kickoff_at, status, status_short, home_goals, away_goals,
+                   kickoff_at, status, status_short, elapsed, home_goals, away_goals,
                    result_source, last_synced_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'WC26_IR', CURRENT_TIMESTAMP(6))
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'WC26_IR', CURRENT_TIMESTAMP(6))
                 ON DUPLICATE KEY UPDATE
                   status         = VALUES(status),
                   status_short   = VALUES(status_short),
+                  elapsed        = VALUES(elapsed),
                   home_goals     = VALUES(home_goals),
                   away_goals     = VALUES(away_goals),
                   last_synced_at = VALUES(last_synced_at)
                 """,
                 extFixtureId, roundId, homeTeamId, awayTeamId,
-                kickoff, status, statusShort, homeGoals, awayGoals);
+                kickoff, status, statusShort, elapsed, homeGoals, awayGoals);
         return true;
     }
 
@@ -215,16 +217,16 @@ public class WorldCup26SyncService {
      */
     private void upsertKnockoutGame(long extFixtureId, long roundId, long homeTeamId, long awayTeamId,
                                     java.sql.Timestamp kickoff, String status, String statusShort,
-                                    Integer homeGoals, Integer awayGoals) {
+                                    Integer elapsed, Integer homeGoals, Integer awayGoals) {
         int updated = jdbc.update("""
                 UPDATE matches
                 SET round_id = ?, home_team_id = ?, away_team_id = ?, kickoff_at = ?,
-                    status = ?, status_short = ?, home_goals = ?, away_goals = ?,
+                    status = ?, status_short = ?, elapsed = ?, home_goals = ?, away_goals = ?,
                     result_source = 'WC26_IR', last_synced_at = CURRENT_TIMESTAMP(6)
                 WHERE external_fixture_id = ?
                 """,
                 roundId, homeTeamId, awayTeamId, kickoff,
-                status, statusShort, homeGoals, awayGoals, extFixtureId);
+                status, statusShort, elapsed, homeGoals, awayGoals, extFixtureId);
         if (updated > 0) return;
 
         List<Long> freeSlot = jdbc.query("""
@@ -237,24 +239,24 @@ public class WorldCup26SyncService {
             jdbc.update("""
                     UPDATE matches
                     SET external_fixture_id = ?, home_team_id = ?, away_team_id = ?, kickoff_at = ?,
-                        status = ?, status_short = ?, home_goals = ?, away_goals = ?,
+                        status = ?, status_short = ?, elapsed = ?, home_goals = ?, away_goals = ?,
                         result_source = 'WC26_IR', last_synced_at = CURRENT_TIMESTAMP(6)
                     WHERE id = ?
                     """,
                     extFixtureId, homeTeamId, awayTeamId, kickoff,
-                    status, statusShort, homeGoals, awayGoals, freeSlot.get(0));
+                    status, statusShort, elapsed, homeGoals, awayGoals, freeSlot.get(0));
             return;
         }
 
         jdbc.update("""
                 INSERT INTO matches
                   (external_fixture_id, round_id, home_team_id, away_team_id,
-                   kickoff_at, status, status_short, home_goals, away_goals,
+                   kickoff_at, status, status_short, elapsed, home_goals, away_goals,
                    result_source, last_synced_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'WC26_IR', CURRENT_TIMESTAMP(6))
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'WC26_IR', CURRENT_TIMESTAMP(6))
                 """,
                 extFixtureId, roundId, homeTeamId, awayTeamId,
-                kickoff, status, statusShort, homeGoals, awayGoals);
+                kickoff, status, statusShort, elapsed, homeGoals, awayGoals);
     }
 
     private String resolveRoundName(String type, String group) {
@@ -262,13 +264,16 @@ public class WorldCup26SyncService {
             return "Group " + group;
         }
         return switch (type.toLowerCase()) {
-            case "round_of_32"  -> "Round of 32";
-            case "round_of_16"  -> "Round of 16";
-            case "quarterfinal" -> "Quarter-finals";
-            case "semifinal"    -> "Semi-finals";
-            case "third_place"  -> "Third place";
+            case "round_of_32", "r32", "roundof32" -> "Round of 32";
+            case "round_of_16", "r16", "roundof16" -> "Round of 16";
+            case "quarterfinal", "quarter_final", "quarter-final", "qf" -> "Quarter-finals";
+            case "semifinal", "semi_final", "semi-final", "sf" -> "Semi-finals";
+            case "third_place", "third place"  -> "Third place";
             case "final"        -> "Final";
-            default             -> type;
+            default             -> {
+                log.warn("Unknown round type from API: '{}' — using as-is", type);
+                yield type;
+            }
         };
     }
 
@@ -293,6 +298,19 @@ public class WorldCup26SyncService {
         if ("notstarted".equalsIgnoreCase(elapsed)) return "NS";
         // elapsed could be "45", "HT", "90+2" etc.
         return elapsed.length() <= 10 ? elapsed : elapsed.substring(0, 10);
+    }
+
+    private Integer parseElapsed(String timeElapsed) {
+        if (timeElapsed == null || "notstarted".equalsIgnoreCase(timeElapsed)
+                || "HT".equalsIgnoreCase(timeElapsed) || "FT".equalsIgnoreCase(timeElapsed)) {
+            return null;
+        }
+        // "45", "90+2", "67" etc. — extract leading digits
+        try {
+            return Integer.parseInt(timeElapsed.replaceAll("\\+.*", "").trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     private Integer parseGoals(String val) {

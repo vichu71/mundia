@@ -881,16 +881,32 @@ h3 { font-size: 0.88rem; font-weight: 700; color: var(--text); }
   transition: width 0.4s cubic-bezier(0.16,1,0.3,1);
 }
 
-.match-group__standings {
+.match-group__standings-wrap {
+  display: flex;
+  gap: 8px;
   padding: 0 16px 10px;
+  cursor: pointer;
+}
+
+.match-group__standings {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 3px;
-  cursor: pointer;
   transition: background 0.15s;
 }
 
-.match-group__standings:hover { background: var(--bg-card-h); }
+.match-group__standings-wrap:hover .match-group__standings { background: var(--bg-card-h); }
+
+.standings-title {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  padding: 0 8px 4px;
+}
 
 .standing-row {
   display: flex;
@@ -905,6 +921,11 @@ h3 { font-size: 0.88rem; font-weight: 700; color: var(--text); }
 .standing-row--qualify {
   background: rgba(96,165,250,0.06);
   border-left: 2px solid rgba(96,165,250,0.4);
+}
+
+.standing-row--maybe {
+  background: rgba(251,191,36,0.06);
+  border-left: 2px solid rgba(251,191,36,0.4);
 }
 
 .standing-pos {
@@ -2422,6 +2443,19 @@ h3 { font-size: 0.88rem; font-weight: 700; color: var(--text); }
 
 .bracket-tab__section { display: flex; flex-direction: column; gap: 14px; }
 
+.bracket-mismatch-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  background: rgba(251,191,36,0.08);
+  border: 1px solid rgba(251,191,36,0.35);
+  color: var(--warning);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
 .bracket-tab__phase-header {
   display: flex;
   align-items: center;
@@ -2871,6 +2905,28 @@ h3 { font-size: 0.88rem; font-weight: 700; color: var(--text); }
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.06em;
+}
+
+/* Variante próximo partido */
+.live-match-banner--upcoming {
+  border-color: rgba(251, 191, 36, 0.45);
+  background: rgba(251, 191, 36, 0.06);
+  animation: upcoming-banner-glow 2.5s ease-in-out infinite;
+}
+
+@keyframes upcoming-banner-glow {
+  0%, 100% { box-shadow: 0 0 8px rgba(251,191,36,0.08); }
+  50%       { box-shadow: 0 0 18px rgba(251,191,36,0.22); }
+}
+
+.live-match-banner__label--upcoming {
+  color: #f59e0b;
+}
+
+.live-match-banner__score--upcoming {
+  color: var(--text-muted);
+  font-size: 1rem;
+  font-weight: 700;
 }
 
 /* ═══════════════════════════════════════════
@@ -4114,6 +4170,25 @@ h3 { font-size: 0.88rem; font-weight: 700; color: var(--text); }
 .bracket-mc--editable:hover {
   border-color: var(--accent) !important;
   box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.25);
+}
+
+.bracket-mc--broken {
+  border-color: rgba(239,68,68,0.6) !important;
+  background: rgba(239,68,68,0.06) !important;
+  position: relative;
+}
+.bracket-mc--broken .bracket-tm__name { color: rgb(239,68,68); }
+
+.bracket-mc--dimmed {
+  opacity: 0.35;
+}
+
+.bracket-mc__broken-icon {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  font-size: 0.65rem;
+  line-height: 1;
 }
 
 /* ── Bracket prediction modal ─────────────────────────────────────────────── */

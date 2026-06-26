@@ -94,6 +94,21 @@ public class DashboardService {
         String sourceFilter = active == Source.API_FOOTBALL ? "API_FOOTBALL" : "WC26_IR";
 
         java.util.Map<Long, String> userPreds = new java.util.HashMap<>();
+        // Load INITIAL predictions first (group stage initial bet) as base
+        jdbcTemplate.query("""
+                SELECT mp.match_id, mp.home_goals, mp.away_goals
+                FROM match_predictions mp
+                JOIN prediction_sets ps ON ps.id = mp.prediction_set_id
+                JOIN pool_members pm    ON pm.id = ps.pool_member_id
+                JOIN pools p            ON p.id  = pm.pool_id
+                WHERE pm.user_id = ? AND p.id = ? AND ps.type = 'INITIAL'
+                """,
+                (rs, i) -> {
+                    userPreds.put(rs.getLong("match_id"),
+                            rs.getInt("home_goals") + " - " + rs.getInt("away_goals"));
+                    return null;
+                }, userId, poolId);
+        // LIVE predictions override INITIAL (live editing takes precedence)
         jdbcTemplate.query("""
                 SELECT mp.match_id, mp.home_goals, mp.away_goals
                 FROM match_predictions mp
