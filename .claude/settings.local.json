@@ -5,7 +5,14 @@
       "Bash(grep -v \"^\\\\s*//\")",
       "mcp__visualize__read_me",
       "mcp__visualize__show_widget",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(mvn clean *)",
+      "PowerShell(Get-Command mvn -ErrorAction SilentlyContinue)",
+      "Bash(git add *)",
+      "Bash(git commit -m 'fix: correct Round of 32 bracket pairings to match WC2026 fixture *)",
+      "Bash(curl -s https://worldcup26.ir/get/games)",
+      "Bash(python3 -m json.tool)",
+      "PowerShell($response = Invoke-WebRequest -Uri \"https://worldcup26.ir/get/games\" -UseBasicParsing; $json = $response.Content | ConvertFrom-Json; $json[0] | ConvertTo-Json -Depth 10)"
     ]
   }
 }

@@ -94,6 +94,7 @@ public class DashboardService {
         String sourceFilter = active == Source.API_FOOTBALL ? "API_FOOTBALL" : "WC26_IR";
 
         java.util.Map<Long, String> userPreds = new java.util.HashMap<>();
+        java.util.Map<Long, String> initialOnlyPreds = new java.util.HashMap<>();
         // Load INITIAL predictions first (group stage initial bet) as base
         jdbcTemplate.query("""
                 SELECT mp.match_id, mp.home_goals, mp.away_goals
@@ -104,8 +105,9 @@ public class DashboardService {
                 WHERE pm.user_id = ? AND p.id = ? AND ps.type = 'INITIAL'
                 """,
                 (rs, i) -> {
-                    userPreds.put(rs.getLong("match_id"),
-                            rs.getInt("home_goals") + " - " + rs.getInt("away_goals"));
+                    String score = rs.getInt("home_goals") + " - " + rs.getInt("away_goals");
+                    userPreds.put(rs.getLong("match_id"), score);
+                    initialOnlyPreds.put(rs.getLong("match_id"), score);
                     return null;
                 }, userId, poolId);
         // LIVE predictions override INITIAL (live editing takes precedence)
@@ -148,13 +150,15 @@ public class DashboardService {
         return jdbcTemplate.query("""
                 SELECT
                   m.id,
-                  ht.name home,
-                  ht.country_code home_fl,
-                  at.name away,
-                  at.country_code away_fl,
-                  m.status,
-                  m.home_goals,
-                  m.away_goals,
+                  CASE WHEN r.stage = 'KNOCKOUT' AND m.result_source = 'SIM' THEN 'Pendiente' ELSE ht.name        END home,
+                  CASE WHEN r.stage = 'KNOCKOUT' AND m.result_source = 'SIM' THEN 'un'        ELSE ht.country_code END home_fl,
+                  CASE WHEN r.stage = 'KNOCKOUT' AND m.result_source = 'SIM' THEN 'Pendiente' ELSE at.name        END away,
+                  CASE WHEN r.stage = 'KNOCKOUT' AND m.result_source = 'SIM' THEN 'un'        ELSE at.country_code END away_fl,
+                  CASE WHEN r.stage = 'KNOCKOUT' AND m.result_source = 'SIM' THEN 'OPEN' ELSE m.status END status,
+                  CASE WHEN r.stage = 'KNOCKOUT' AND m.result_source = 'SIM' THEN NULL ELSE m.home_goals       END home_goals,
+                  CASE WHEN r.stage = 'KNOCKOUT' AND m.result_source = 'SIM' THEN NULL ELSE m.away_goals       END away_goals,
+                  CASE WHEN r.stage = 'KNOCKOUT' AND m.result_source = 'SIM' THEN NULL ELSE m.home_penalty_score END home_penalty_score,
+                  CASE WHEN r.stage = 'KNOCKOUT' AND m.result_source = 'SIM' THEN NULL ELSE m.away_penalty_score END away_penalty_score,
                   m.result_source,
                   m.kickoff_at,
                   r.name round_name,
@@ -177,9 +181,19 @@ public class DashboardService {
             long matchId  = rs.getLong("id");
             Integer homeGoals = nullableInt(rs, "home_goals");
             Integer awayGoals = nullableInt(rs, "away_goals");
+            Integer homePenalty = nullableInt(rs, "home_penalty_score");
+            Integer awayPenalty = nullableInt(rs, "away_penalty_score");
             String status = rs.getString("status");
-            String real   = homeGoals == null || awayGoals == null ? "Pend." : homeGoals + " - " + awayGoals;
+            String real;
+            if (homeGoals == null || awayGoals == null) {
+                real = "Pend.";
+            } else if (homePenalty != null && awayPenalty != null) {
+                real = homeGoals + " - " + awayGoals + " (" + homePenalty + "-" + awayPenalty + " pen.)";
+            } else {
+                real = homeGoals + " - " + awayGoals;
+            }
             String pred   = userPreds.getOrDefault(matchId, "? - ?");
+            String initialPred = initialOnlyPreds.getOrDefault(matchId, "? - ?");
             java.sql.Timestamp kickoffTs = rs.getTimestamp("kickoff_at");
             String kickoff = kickoffTs != null ? kickoffTs.toInstant().toString() : null;
 
@@ -202,6 +216,7 @@ public class DashboardService {
                     rs.getString("home_fl"),
                     rs.getString("away_fl"),
                     pred,
+                    initialPred,
                     real,
                     totalPts,
                     scoreType,
@@ -375,19 +390,49 @@ public class DashboardService {
                     return null;
                 }, userId, poolId);
 
+        java.util.Map<Long, String> initialOnlyPreds = new java.util.HashMap<>();
+        jdbcTemplate.query("""
+                SELECT mp.match_id, mp.home_goals, mp.away_goals
+                FROM match_predictions mp
+                JOIN prediction_sets ps ON ps.id = mp.prediction_set_id
+                JOIN pool_members pm    ON pm.id = ps.pool_member_id
+                WHERE pm.user_id = ? AND pm.pool_id = ? AND ps.type = 'INITIAL'
+                """,
+                (rs, i) -> {
+                    initialOnlyPreds.put(rs.getLong("match_id"),
+                            rs.getInt("home_goals") + "-" + rs.getInt("away_goals"));
+                    return null;
+                }, userId, poolId);
+
         List<BracketRow> rows = jdbcTemplate.query("""
                 SELECT
                   r.name round_name,
                   r.stage,
                   r.sort_order,
                   m.id match_id,
-                  ht.name home,
-                  ht.country_code home_fl,
-                  at.name away,
-                  at.country_code away_fl,
-                  m.home_goals,
-                  m.away_goals,
-                  m.status
+                  CASE WHEN r.stage = 'KNOCKOUT' AND m.result_source = 'SIM' THEN 'Pendiente' ELSE ht.name            END home,
+                  CASE WHEN r.stage = 'KNOCKOUT' AND m.result_source = 'SIM' THEN 'un'        ELSE ht.country_code     END home_fl,
+                  CASE WHEN r.stage = 'KNOCKOUT' AND m.result_source = 'SIM' THEN 'Pendiente' ELSE at.name            END away,
+                  CASE WHEN r.stage = 'KNOCKOUT' AND m.result_source = 'SIM' THEN 'un'        ELSE at.country_code     END away_fl,
+                  CASE WHEN r.stage = 'KNOCKOUT' AND m.result_source = 'SIM' THEN NULL ELSE m.home_goals       END home_goals,
+                  CASE WHEN r.stage = 'KNOCKOUT' AND m.result_source = 'SIM' THEN NULL ELSE m.away_goals       END away_goals,
+                  CASE WHEN r.stage = 'KNOCKOUT' AND m.result_source = 'SIM' THEN NULL ELSE m.home_penalty_score END home_penalty_score,
+                  CASE WHEN r.stage = 'KNOCKOUT' AND m.result_source = 'SIM' THEN NULL ELSE m.away_penalty_score END away_penalty_score,
+                  CASE WHEN r.stage = 'KNOCKOUT' AND m.result_source = 'SIM' THEN 'OPEN' ELSE m.status         END status,
+                  m.external_fixture_id ext_id,
+                  CASE ABS(m.external_fixture_id)
+                    WHEN 74 THEN 0  WHEN 77 THEN 1  WHEN 73 THEN 2  WHEN 75 THEN 3
+                    WHEN 83 THEN 4  WHEN 84 THEN 5  WHEN 81 THEN 6  WHEN 82 THEN 7
+                    WHEN 76 THEN 8  WHEN 78 THEN 9  WHEN 79 THEN 10 WHEN 80 THEN 11
+                    WHEN 86 THEN 12 WHEN 88 THEN 13 WHEN 85 THEN 14 WHEN 87 THEN 15
+                    WHEN 89 THEN 0  WHEN 90 THEN 1  WHEN 93 THEN 2  WHEN 94 THEN 3
+                    WHEN 91 THEN 4  WHEN 92 THEN 5  WHEN 95 THEN 6  WHEN 96 THEN 7
+                    WHEN 97 THEN 0  WHEN 98 THEN 1  WHEN 99 THEN 2  WHEN 100 THEN 3
+                    WHEN 101 THEN 0 WHEN 102 THEN 1
+                    WHEN 104 THEN 0
+                    WHEN 103 THEN 0
+                    ELSE 99
+                  END bracket_sort
                 FROM rounds r
                 JOIN matches m ON m.round_id = r.id
                   AND (r.stage = 'GROUP_STAGE' AND m.result_source IN (?, 'SIM')
@@ -397,6 +442,7 @@ public class DashboardService {
                 ORDER BY
                   CASE r.stage WHEN 'GROUP_STAGE' THEN 0 ELSE 1 END,
                   r.sort_order,
+                  bracket_sort,
                   m.kickoff_at IS NULL,
                   m.kickoff_at,
                   m.id
@@ -409,21 +455,36 @@ public class DashboardService {
                 rs.getString("away_fl"),
                 nullableInt(rs, "home_goals"),
                 nullableInt(rs, "away_goals"),
-                rs.getString("status")
+                nullableInt(rs, "home_penalty_score"),
+                nullableInt(rs, "away_penalty_score"),
+                rs.getString("status"),
+                nullableLong(rs, "ext_id")
         ), sourceFilter);
 
         Map<String, List<BracketMatchDto>> rounds = new LinkedHashMap<>();
         for (BracketRow row : rows) {
-            String real = row.homeGoals() == null || row.awayGoals() == null
-                    ? "Pend."
-                    : row.homeGoals() + "-" + row.awayGoals();
+            String real;
+            if (row.homeGoals() == null || row.awayGoals() == null) {
+                real = "Pend.";
+            } else if (row.homePenalty() != null && row.awayPenalty() != null) {
+                real = row.homeGoals() + "-" + row.awayGoals()
+                        + " (" + row.homePenalty() + "-" + row.awayPenalty() + " pen.)";
+            } else {
+                real = row.homeGoals() + "-" + row.awayGoals();
+            }
             String winner = "Pendiente";
             if (row.homeGoals() != null && row.awayGoals() != null) {
-                winner = row.homeGoals() > row.awayGoals()
-                        ? row.home()
-                        : row.awayGoals() > row.homeGoals() ? row.away() : "Empate";
+                if (!row.homeGoals().equals(row.awayGoals())) {
+                    winner = row.homeGoals() > row.awayGoals() ? row.home() : row.away();
+                } else if (row.homePenalty() != null && row.awayPenalty() != null) {
+                    // Tied after 90' — penalty shootout decides the winner.
+                    winner = row.homePenalty() > row.awayPenalty() ? row.home() : row.away();
+                } else {
+                    winner = "Empate";
+                }
             }
             String pred = userPreds.getOrDefault(row.matchId(), "?-?");
+            String initialPred = initialOnlyPreds.getOrDefault(row.matchId(), "?-?");
             rounds.computeIfAbsent(row.roundName(), ignored -> new ArrayList<>())
                     .add(new BracketMatchDto(
                             row.matchId(),
@@ -432,9 +493,11 @@ public class DashboardService {
                             valueOrPending(row.away()),
                             valueOrFlag(row.awayFlag()),
                             pred,
+                            initialPred,
                             real,
                             winner,
-                            "CLOSED".equals(row.status()) || "FINISHED".equals(row.status())
+                            "CLOSED".equals(row.status()) || "FINISHED".equals(row.status()),
+                            row.extId()
                     ));
         }
 
@@ -562,6 +625,11 @@ public class DashboardService {
         return rs.wasNull() ? null : value;
     }
 
+    private static Long nullableLong(java.sql.ResultSet rs, String column) throws java.sql.SQLException {
+        long value = rs.getLong(column);
+        return rs.wasNull() ? null : value;
+    }
+
     private static int centsToEuros(int cents) {
         return Math.round(cents / 100.0f);
     }
@@ -646,7 +714,10 @@ public class DashboardService {
             String awayFlag,
             Integer homeGoals,
             Integer awayGoals,
-            String status
+            Integer homePenalty,
+            Integer awayPenalty,
+            String status,
+            Long extId
     ) {
     }
 }

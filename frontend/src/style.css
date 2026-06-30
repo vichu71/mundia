@@ -1078,9 +1078,19 @@ h3 { font-size: 0.88rem; font-weight: 700; color: var(--text); }
   font-weight: 900;
   color: var(--text);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .score-display small { font-size: 0.58rem; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+
+.score-display small.score-pen-suffix {
+  font-size: 0.62rem;
+  color: var(--text);
+  font-weight: 700;
+  text-transform: none;
+  letter-spacing: normal;
+  white-space: nowrap;
+}
 
 .vs-divider { color: var(--border-md); font-size: 1.2rem; line-height: 1; }
 
@@ -1146,6 +1156,17 @@ h3 { font-size: 0.88rem; font-weight: 700; color: var(--text); }
   color: var(--coral);
   background: var(--coral-dim);
   border: 1px solid rgba(251,113,133,0.25);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  text-align: center;
+}
+
+.match-pen-winner {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--green, #2ecc71);
+  background: rgba(46,204,113,0.12);
+  border: 1px solid rgba(46,204,113,0.25);
   border-radius: var(--radius-sm);
   padding: 4px 10px;
   text-align: center;
@@ -2467,6 +2488,31 @@ h3 { font-size: 0.88rem; font-weight: 700; color: var(--text); }
 .bracket-tab__phase-header svg { color: var(--blue); }
 .bracket-tab__phase-header h2 { font-size: 1rem; }
 
+.bracket-view-toggle {
+  display: flex;
+  margin-left: auto;
+  background: var(--surface-md);
+  border-radius: 999px;
+  padding: 3px;
+  gap: 2px;
+}
+.bracket-view-toggle__btn {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 5px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.bracket-view-toggle__btn--active {
+  background: var(--blue);
+  color: #fff;
+}
+
 /* Groups grid */
 .bracket-groups-grid {
   display: grid;
@@ -3047,6 +3093,12 @@ h3 { font-size: 0.88rem; font-weight: 700; color: var(--text); }
 
   .podium { gap: 6px; }
   .bottom-nav { border-radius: 0; bottom: 0; right: 0; left: 0; }
+
+  /* En móvil las dos columnas de clasificación no tienen espacio para las stats;
+     se ocultan para evitar overflow que encima las filas unas sobre otras. */
+  .standing-stats { display: none; }
+  .standing-row { gap: 5px; }
+  .standing-pts { min-width: 28px; }
 }
 
 @media (min-width: 1100px) {

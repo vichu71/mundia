@@ -32,11 +32,11 @@ import {
 type TabId = 'home' | 'matches' | 'bracket' | 'ranking' | 'prizes' | 'admin'
 
 type Pool = { id: number; name: string; code: string; status: string; statusType: string; userRole: string; members: number; paid: number; pot: number }
-type Match = { id: number; home: string; away: string; homeFl: string; awayFl: string; pred: string; real: string; points: number | null; scoreType: string | null; scoreNote: string | null; status: string; statusType: string; note: string; kickoff: string | null; source: string | null; roundName: string | null; stage: string | null; elapsed: number | null; statusShort: string | null }
+type Match = { id: number; home: string; away: string; homeFl: string; awayFl: string; pred: string; initialPred: string; real: string; points: number | null; scoreType: string | null; scoreNote: string | null; status: string; statusType: string; note: string; kickoff: string | null; source: string | null; roundName: string | null; stage: string | null; elapsed: number | null; statusShort: string | null }
 type RankingRow = { pos: number; memberId: number; name: string; avatar: string; points: number; exact: number; winners: number; prize: number; delta: string; alive: boolean }
 type InitialRankingRow = { pos: number; name: string; points: number; exact: number; winners: number; bonus: string }
 type PrizeRow = { label: string; amount: number; state: string; stateType: string; contenders: number; pct: number }
-type BracketMatch = { matchId: number; home: string; homeFl: string; away: string; awayFl: string; pred: string; real: string; winner: string; done: boolean }
+type BracketMatch = { matchId: number; home: string; homeFl: string; away: string; awayFl: string; pred: string; initialPred: string; real: string; winner: string; done: boolean; extId?: number | null }
 type TeamStanding = { name: string; flag: string; played: number; won: number; drawn: number; lost: number; gf: number; ga: number; points: number }
 type GroupStanding = { roundName: string; teams: TeamStanding[] }
 type BracketRound = { name: string; matches: BracketMatch[] }
@@ -387,6 +387,7 @@ async function createPool() {
 //  STATE
 // ──────────────────────────────────────────
 const activeTab   = ref<TabId>('home')
+const bracketViewMode = ref<'live' | 'initial'>('live')
 const activePool  = ref<number | null>(null)
 const showHelp    = ref(false)
 const HELP_SEEN_KEY = 'mundia-help-seen'
@@ -601,6 +602,32 @@ function parsePredScore(pred: string): [number, number] | null {
   return isNaN(h) || isNaN(a) ? null : [h, a]
 }
 
+// Extracts just the regulation-time goal count from a real-score string,
+// stripping any trailing "(N-M pen.)" shootout suffix.
+function realGoalPart(real: string, idx: 0 | 1): string {
+  const score = parsePredScore(real.replace(/\s*\(.*\)\s*$/, ''))
+  return score ? String(score[idx]) : ''
+}
+
+// Splits a "1 - 1 (3-4 pen.)" real-score string into the main score and the
+// penalty suffix so they can be rendered on separate lines (avoids mid-word wrap).
+function realMainScore(real: string): string {
+  return real.replace(/\s*\(.*\)\s*$/, '')
+}
+function realPenSuffix(real: string): string | null {
+  const match = real.match(/\(.*\)\s*$/)
+  return match ? match[0] : null
+}
+
+// If a knockout match was tied after 90' and decided on penalties, `real` carries
+// a "(H-A pen.)" suffix — returns which team advanced, or null otherwise.
+function penaltyWinner(m: { home: string; away: string; real: string }): string | null {
+  const match = m.real.match(/\((\d+)\s*-\s*(\d+)\s*pen\.?\)/)
+  if (!match) return null
+  const [, h, a] = match
+  return parseInt(h) > parseInt(a) ? m.home : m.away
+}
+
 type PredTeamStat = TeamInfo & { pts: number; gf: number; ga: number; played: number; won: number; drawn: number; lost: number }
 
 function computeGroupStandingsFromPreds(): Map<string, Array<PredTeamStat>> {
@@ -646,8 +673,9 @@ function computeGroupStandingsFromPreds(): Map<string, Array<PredTeamStat>> {
   return result
 }
 
-// Para el cascade del cuadro: usa resultado real si está disponible, si no la predicción
-function computeGroupStandingsForBracket(): Map<string, Array<PredTeamStat>> {
+// Clasificación de grupos basada SOLO en la apuesta inicial (congelada), para el
+// cuadro "Apuesta inicial" — ignora por completo resultados reales y predicción LIVE.
+function computeGroupStandingsFromInitialPreds(): Map<string, Array<PredTeamStat>> {
   const result = new Map<string, Array<PredTeamStat>>()
   const groupMatches = matches.value.filter(m => m.stage === 'GROUP_STAGE')
   for (const m of groupMatches) {
@@ -660,8 +688,7 @@ function computeGroupStandingsForBracket(): Map<string, Array<PredTeamStat>> {
   }
   for (const m of groupMatches) {
     const g = m.roundName?.replace(/^Group\s+/i, '') ?? ''
-    const src = (m.real && m.real !== 'Pend.' && !m.real.includes('?')) ? m.real : m.pred
-    const score = parsePredScore(src ?? '')
+    const score = parsePredScore(m.initialPred ?? '')
     if (!score) continue
     const [hg, ag] = score
     const arr = result.get(g)
@@ -675,7 +702,13 @@ function computeGroupStandingsForBracket(): Map<string, Array<PredTeamStat>> {
     else if (ag > hg) { away.pts += 3; away.won++; home.lost++ }
     else { home.pts += 1; away.pts += 1; home.drawn++; away.drawn++ }
   }
-  for (const [, arr] of result.entries()) {
+  for (const [g, arr] of result.entries()) {
+    const gMatches = groupMatches.filter(m => m.roundName?.replace(/^Group\s+/i, '') === g)
+    const hasPred = gMatches.some(m => {
+      const p = m.initialPred ?? ''
+      return p !== '' && p !== '? - ?' && p !== '?-?' && p !== '?'
+    })
+    if (!hasPred) { result.delete(g); continue }
     arr.sort((a, b) => (b.pts - a.pts) || ((b.gf - b.ga) - (a.gf - a.ga)) || (b.gf - a.gf))
   }
   return result
@@ -694,19 +727,73 @@ function getRealStandings(roundName: string): TeamStanding[] {
   return groupStandings.value.find(g => g.roundName === roundName)?.teams ?? []
 }
 
+// Real WC2026 bracket topology (worldcup26.ir game ids → top-to-bottom slot order
+// within each round). Derived from the API's home/away_team_label fields
+// ("Winner Match N"). Ordering each round this way makes the cascade's naive
+// consecutive-pairing (matches[2i],[2i+1] → next[i]) follow the true tree:
+//   R16: 89=(74,77) 90=(73,75) 91=(76,78) 92=(79,80) 93=(83,84) 94=(81,82) 95=(86,88) 96=(85,87)
+//   QF:  97=(89,90) 98=(93,94) 99=(91,92) 100=(95,96)   SF: 101=(97,98) 102=(99,100)   Final:104
+const WC26_BRACKET_ORDER: Record<number, number> = {
+  // R32 (top-to-bottom display order)
+  74: 0, 77: 1, 73: 2, 75: 3, 83: 4, 84: 5, 81: 6, 82: 7,
+  76: 8, 78: 9, 79: 10, 80: 11, 86: 12, 88: 13, 85: 14, 87: 15,
+  // R16 — confirmado desde API real:
+  //   89=(R32 74+77)→slot0  90=(R32 73+75)→slot1  91=(R32 76+78)→slot4
+  //   resto (92,93,94,95,96) en orden provisional hasta que tengan datos reales
+  89: 0, 90: 1, 93: 2, 94: 3, 91: 4, 92: 5, 95: 6, 96: 7,
+  // QF
+  97: 0, 98: 1, 99: 2, 100: 3,
+  // SF
+  101: 0, 102: 1,
+  // Final
+  104: 0,
+}
+
+// Maps a match's external_fixture_id (stored as -gameId) to its bracket slot.
+// Unsynced placeholders (extId null/undefined) keep their original order via a
+// stable sort, sitting after any synced sibling.
+function bracketPos(extId?: number | null): number {
+  if (extId == null) return 999
+  const pos = WC26_BRACKET_ORDER[Math.abs(extId)]
+  return pos === undefined ? 999 : pos
+}
+
+// Coloca cada partido en su slot topológico REAL (no en orden denso). Clave:
+// la API solo sincroniza un partido de R16+ cuando alguno de sus dos equipos
+// ya se conoce; el resto siguen siendo placeholders con extId=NULL (pos 999).
+// Un sort denso los amontonaría al final y los partidos reales subirían de
+// posición (Brazil/Norway, slot 4, acababa pintándose en la caja 2). Aquí
+// reservamos un array del tamaño de la ronda, ponemos cada partido con slot
+// conocido en su índice, y rellenamos los huecos con los placeholders sobrantes.
+function arrangeByBracketPos(matches: BracketMatch[]): BracketMatch[] {
+  const n = matches.length
+  const slots: (BracketMatch | null)[] = new Array(n).fill(null)
+  const leftover: BracketMatch[] = []
+  for (const m of matches) {
+    const pos = bracketPos(m.extId)
+    if (pos < n && slots[pos] === null) slots[pos] = m
+    else leftover.push(m)
+  }
+  let li = 0
+  for (let i = 0; i < n; i++) {
+    if (slots[i] === null) slots[i] = leftover[li++] ?? null
+  }
+  return slots.filter((m): m is BracketMatch => m !== null)
+}
+
 function bracketMatchWinner(m: BracketMatch): TeamInfo | null {
   if (m.done) {
-    // Use real score to determine home/away winner — avoids 'Pendiente' winner field
-    // (the winner field can be 'Pendiente' if the DB team name is the placeholder)
+    // Prefer the backend-computed winner — it accounts for penalty shootouts,
+    // which a raw score comparison (tied after 90') cannot.
+    if (m.winner && m.winner !== 'Pendiente' && m.winner !== 'Empate' && m.winner !== '?') {
+      const flag = m.winner === m.home ? m.homeFl : m.awayFl
+      return { name: m.winner, flag }
+    }
+    // Fallback: derive from the real score (e.g. winner field held a placeholder name)
     const realScore = parsePredScore(m.real)
     if (realScore) {
       const [hg, ag] = realScore
       return hg >= ag ? { name: m.home, flag: m.homeFl } : { name: m.away, flag: m.awayFl }
-    }
-    // Fallback: use winner field only if it matches injected home/away name
-    if (m.winner && m.winner !== 'Pendiente' && m.winner !== '?') {
-      const flag = m.winner === m.home ? m.homeFl : m.awayFl
-      return { name: m.winner, flag }
     }
   }
   const score = parsePredScore(m.pred)
@@ -715,6 +802,14 @@ function bracketMatchWinner(m: BracketMatch): TeamInfo | null {
   // Knockout: draws resolved in extra time → home team advances
   if (hg >= ag) return { name: m.home, flag: m.homeFl }
   return { name: m.away, flag: m.awayFl }
+}
+
+// Versión "solo real" para el cuadro LIVE: nunca adivina un ganador a partir de
+// Un marcador (real o predicho) solo tiene sentido si AMBOS equipos se conocen
+// ya — un 'Pendiente' vs 'Pendiente' con goles es un resto de datos, no un
+// resultado ni una predicción real, y no debe mostrarse.
+function bracketTeamsKnown(m: BracketMatch): boolean {
+  return m.home !== 'Pendiente' && m.home !== '?' && m.away !== 'Pendiente' && m.away !== '?'
 }
 
 function injectTeam(m: BracketMatch, predicted: Map<number, { home: TeamInfo; away: TeamInfo }>): BracketMatch {
@@ -733,12 +828,27 @@ function injectTeam(m: BracketMatch, predicted: Map<number, { home: TeamInfo; aw
   }
 }
 
+// Variante del cuadro "Apuesta inicial": siempre sustituye el equipo por el
+// predicho, aunque el partido real ya tenga equipos reales sincronizados — la
+// apuesta inicial es un universo alternativo autocontenido, nunca debe mostrar
+// el equipo real de la otra vista.
+function injectTeamForce(m: BracketMatch, predicted: Map<number, { home: TeamInfo; away: TeamInfo }>): BracketMatch {
+  const p = predicted.get(m.matchId)
+  if (!p) return m
+  return { ...m, home: p.home.name, homeFl: p.home.flag, away: p.away.name, awayFl: p.away.flag }
+}
+
 const bracketLevels = computed((): BracketLevel[] => {
   // 'Third place' queda fuera del árbol: una ronda extra de 1 partido rompería
   // el emparejamiento del cascade (se muestra solo en la pestaña Partidos)
   const rounds = bracketRounds.value
     .filter(r => !r.name.toLowerCase().startsWith('group') && r.name !== 'Third place')
     .sort((a, b) => b.matches.length - a.matches.length)
+    // Reorder each round by the REAL WC2026 bracket topology so the cascade's
+    // consecutive-pairing (matches[2i], matches[2i+1] → next round) lines up with
+    // which match actually feeds which. Without this the backend's kickoff order
+    // scrambles the tree (e.g. Brazil's winner lands in the wrong Octavos slot).
+    .map(r => ({ ...r, matches: arrangeByBracketPos(r.matches) }))
   if (!rounds.length) return []
   const maxMatches = rounds[0].matches.length
   const BASE = 54
@@ -781,9 +891,77 @@ const bracketLevels = computed((): BracketLevel[] => {
     }
   }
 
-  // Cascade R16 → QF → SF → Final
+  // En LIVE no hay cascade: R16+ se pinta directamente con los datos que la BD ya
+  // tiene sincronizados desde la API. Si un cruce está decidido → equipos reales.
+  // Si aún no se sabe → la BD tiene 'Pendiente' y así se muestra. Sin especulación.
+
+  return rounds.map(r => {
+    const slotH = Math.round((BASE * maxMatches) / r.matches.length)
+    const pairs: BracketPair[] = []
+    for (let i = 0; i < r.matches.length; i += 2) {
+      const top    = injectTeam(r.matches[i],           predicted)
+      const bottom = r.matches[i + 1] ? injectTeam(r.matches[i + 1], predicted) : null
+      pairs.push({ top, bottom })
+    }
+    return { name: r.name, pairs, slotH }
+  })
+})
+
+// Cuadro "Apuesta inicial": réplica de bracketLevels pero 100% autocontenida en
+// la apuesta inicial congelada. Cada partido se trata como si nada se hubiera
+// jugado todavía (done=false, real='Pend.') y su `pred` pasa a ser `initialPred`,
+// así el cascade y la plantilla existentes (que leen pair.top.pred/.done/.real)
+// funcionan sin cambios, sin tener que comparar/reconciliar contra el cuadro LIVE.
+const bracketLevelsInitial = computed((): BracketLevel[] => {
+  const rounds = bracketRounds.value
+    .filter(r => !r.name.toLowerCase().startsWith('group') && r.name !== 'Third place')
+    .sort((a, b) => b.matches.length - a.matches.length)
+    .map(r => ({
+      ...r,
+      matches: arrangeByBracketPos(r.matches)
+        .map(m => ({ ...m, pred: m.initialPred ?? '?-?', done: false, real: 'Pend.', winner: 'Pendiente' })),
+    }))
+  if (!rounds.length) return []
+  const maxMatches = rounds[0].matches.length
+  const BASE = 54
+
+  const predicted = new Map<number, { home: TeamInfo; away: TeamInfo }>()
+
+  const standings = computeGroupStandingsFromInitialPreds()
+  const hasGroupMatches = matches.value.some(m => m.stage === 'GROUP_STAGE')
+  const getTeam = (g: string, rank: 1|2): TeamInfo => {
+    const arr = standings.get(g)
+    const t = arr?.[rank - 1]
+    if (t) return { name: t.name, flag: t.flag }
+    if (!hasGroupMatches) {
+      const staticTeam = WC26_GROUPS[g]?.[rank - 1]
+      if (staticTeam) return { name: staticTeam.name, flag: staticTeam.flag }
+    }
+    return { name: '?', flag: 'un' }
+  }
+  if (rounds[0]?.matches.length >= 16) {
+    WC26_R32.forEach(([hg, hr, ag, ar], i) => {
+      const m = rounds[0].matches[i]
+      if (m) predicted.set(m.matchId, { home: getTeam(hg, hr), away: getTeam(ag, ar) })
+    })
+    const all3rds: Array<TeamInfo & { pts: number; gf: number; ga: number }> = []
+    for (const arr of standings.values()) if (arr[2]) all3rds.push(arr[2])
+    all3rds.sort((a, b) => (b.pts - a.pts) || ((b.gf - b.ga) - (a.gf - a.ga)))
+    const best8 = all3rds.slice(0, 8)
+    for (let i = 0; i < 4; i++) {
+      const m = rounds[0].matches[12 + i]
+      if (m) predicted.set(m.matchId, {
+        home: best8[i * 2]     ? { name: best8[i * 2].name,     flag: best8[i * 2].flag }     : { name: '?', flag: 'un' },
+        away: best8[i * 2 + 1] ? { name: best8[i * 2 + 1].name, flag: best8[i * 2 + 1].flag } : { name: '?', flag: 'un' },
+      })
+    }
+  }
+
+  // Cascada 100% basada en la apuesta inicial: injectTeamForce ignora si el
+  // partido real ya tiene equipos sincronizados, así este cuadro nunca se
+  // "contamina" con datos reales — es un universo alternativo autocontenido.
   for (let ri = 1; ri < rounds.length; ri++) {
-    const prev = rounds[ri - 1].matches.map(m => injectTeam(m, predicted))
+    const prev = rounds[ri - 1].matches.map(m => injectTeamForce(m, predicted))
     const curr = rounds[ri].matches
     for (let i = 0; i < curr.length; i++) {
       const m1 = prev[i * 2], m2 = prev[i * 2 + 1]
@@ -800,13 +978,16 @@ const bracketLevels = computed((): BracketLevel[] => {
     const slotH = Math.round((BASE * maxMatches) / r.matches.length)
     const pairs: BracketPair[] = []
     for (let i = 0; i < r.matches.length; i += 2) {
-      const top    = injectTeam(r.matches[i],           predicted)
-      const bottom = r.matches[i + 1] ? injectTeam(r.matches[i + 1], predicted) : null
+      const top    = injectTeamForce(r.matches[i],           predicted)
+      const bottom = r.matches[i + 1] ? injectTeamForce(r.matches[i + 1], predicted) : null
       pairs.push({ top, bottom })
     }
     return { name: r.name, pairs, slotH }
   })
 })
+
+// Cuadro que se pinta según el toggle LIVE / Apuesta inicial
+const activeBracketLevels = computed(() => bracketViewMode.value === 'initial' ? bracketLevelsInitial.value : bracketLevels.value)
 
 const ROUND_LABELS: Record<string, string> = {
   'Round of 32': 'R32',
@@ -935,10 +1116,10 @@ async function saveBracketPreds() {
 }
 
 const matches = ref<Match[]>([
-  { id: 1, home: 'Espana',    away: 'Alemania',  homeFl: 'es',     awayFl: 'de',     pred: '0 - 0', real: 'Pend.', points: null, scoreType: null, scoreNote: null, status: 'Abierto', statusType: 'open', note: 'Partido de prueba.', kickoff: null, source: null, roundName: 'Group A', stage: 'GROUP_STAGE', elapsed: null, statusShort: null },
-  { id: 2, home: 'Brasil',    away: 'Portugal',  homeFl: 'br',     awayFl: 'pt',     pred: '0 - 0', real: 'Pend.', points: null, scoreType: null, scoreNote: null, status: 'Abierto', statusType: 'open', note: 'Pendiente de sincronizar.', kickoff: null, source: null, roundName: 'Group A', stage: 'GROUP_STAGE', elapsed: null, statusShort: null },
-  { id: 3, home: 'Argentina', away: 'Francia',   homeFl: 'ar',     awayFl: 'fr',     pred: '0 - 0', real: 'Pend.', points: null, scoreType: null, scoreNote: null, status: 'Abierto', statusType: 'open', note: 'Editable.', kickoff: null, source: null, roundName: 'Group B', stage: 'GROUP_STAGE', elapsed: null, statusShort: null },
-  { id: 4, home: 'Inglaterra',away: 'Italia',    homeFl: 'gb-eng', awayFl: 'it',     pred: '0 - 0', real: 'Pend.', points: null, scoreType: null, scoreNote: null, status: 'Abierto', statusType: 'open', note: 'Sin puntos todavia.', kickoff: null, source: null, roundName: 'Group B', stage: 'GROUP_STAGE', elapsed: null, statusShort: null },
+  { id: 1, home: 'Espana',    away: 'Alemania',  homeFl: 'es',     awayFl: 'de',     pred: '0 - 0', initialPred: '0 - 0', real: 'Pend.', points: null, scoreType: null, scoreNote: null, status: 'Abierto', statusType: 'open', note: 'Partido de prueba.', kickoff: null, source: null, roundName: 'Group A', stage: 'GROUP_STAGE', elapsed: null, statusShort: null },
+  { id: 2, home: 'Brasil',    away: 'Portugal',  homeFl: 'br',     awayFl: 'pt',     pred: '0 - 0', initialPred: '0 - 0', real: 'Pend.', points: null, scoreType: null, scoreNote: null, status: 'Abierto', statusType: 'open', note: 'Pendiente de sincronizar.', kickoff: null, source: null, roundName: 'Group A', stage: 'GROUP_STAGE', elapsed: null, statusShort: null },
+  { id: 3, home: 'Argentina', away: 'Francia',   homeFl: 'ar',     awayFl: 'fr',     pred: '0 - 0', initialPred: '0 - 0', real: 'Pend.', points: null, scoreType: null, scoreNote: null, status: 'Abierto', statusType: 'open', note: 'Editable.', kickoff: null, source: null, roundName: 'Group B', stage: 'GROUP_STAGE', elapsed: null, statusShort: null },
+  { id: 4, home: 'Inglaterra',away: 'Italia',    homeFl: 'gb-eng', awayFl: 'it',     pred: '0 - 0', initialPred: '0 - 0', real: 'Pend.', points: null, scoreType: null, scoreNote: null, status: 'Abierto', statusType: 'open', note: 'Sin puntos todavia.', kickoff: null, source: null, roundName: 'Group B', stage: 'GROUP_STAGE', elapsed: null, statusShort: null },
 ])
 
 const newsItems        = ref<string[]>([])
@@ -1293,62 +1474,18 @@ const showInitialBetForced = computed(() =>
 // (Antes te forzaba a la pestaña de partidos al entrar; ya no.)
 const initialBetDismissed = ref(false)
 
-// Slots del bracket rotos (equipo imposible) y afectados (hilo downstream)
-const bracketAlerts = computed((): { broken: Set<number>; dimmed: Set<number> } => {
-  const broken = new Set<number>()
-  const dimmed  = new Set<number>()
-  const levels  = bracketLevels.value
-  if (!levels.length) return { broken, dimmed }
-
-  const realStandings = computeGroupStandingsForBracket()
-
-  // Grupos terminados: todos sus equipos han jugado 3 partidos
-  const completedGroups = new Set<string>()
-  for (const [g, arr] of realStandings.entries()) {
-    if (arr.length >= 2 && arr.every(t => t.played === 3)) completedGroups.add(g)
-  }
-
-  // Mapa equipo → grupo (para saber a qué grupo pertenece un equipo predicho)
-  const teamToGroup = new Map<string, string>()
-  for (const [g, arr] of realStandings.entries()) {
-    for (const t of arr) teamToGroup.set(t.name, g)
-  }
-
-  // "levelIndex_matchIndex" → broken/affected para propagar
-  const affectedSlotKeys = new Set<string>()
-
-  const levelMatches = (li: number) =>
-    levels[li].pairs.flatMap(p => p.bottom ? [p.top, p.bottom] : [p.top])
-
-  // R32: detectar equipos imposibles
-  levelMatches(0).forEach((m, idx) => {
-    let isBroken = false
-    for (const teamName of [m.home, m.away]) {
-      if (!teamName || teamName === '?' || teamName === 'Pendiente') continue
-      const g = teamToGroup.get(teamName)
-      if (!g || !completedGroups.has(g)) continue
-      const top2 = [realStandings.get(g)?.[0]?.name, realStandings.get(g)?.[1]?.name]
-      if (!top2.includes(teamName)) { isBroken = true; break }
-    }
-    if (isBroken) { broken.add(m.matchId); affectedSlotKeys.add(`0_${idx}`) }
-  })
-
-  // Propagar a rondas siguientes
-  for (let li = 1; li < levels.length; li++) {
-    levelMatches(li).forEach((m, idx) => {
-      if (affectedSlotKeys.has(`${li - 1}_${idx * 2}`) || affectedSlotKeys.has(`${li - 1}_${idx * 2 + 1}`)) {
-        dimmed.add(m.matchId)
-        affectedSlotKeys.add(`${li}_${idx}`)
-      }
-    })
-  }
-
-  return { broken, dimmed }
-})
-
 // Winner predicho de la Final (el equipo que el cascade dice que ganará)
 const predFinalWinner = computed((): TeamInfo | null => {
   const finalLevel = bracketLevels.value.find(l => l.name === 'Final')
+  if (!finalLevel) return null
+  const finalMatch = finalLevel.pairs[0]?.top
+  if (!finalMatch) return null
+  return bracketMatchWinner(finalMatch)
+})
+
+// Campeón según el cuadro "Apuesta inicial" (solo lectura, no dispara auto-sync)
+const initialFinalWinner = computed((): TeamInfo | null => {
+  const finalLevel = bracketLevelsInitial.value.find(l => l.name === 'Final')
   if (!finalLevel) return null
   const finalMatch = finalLevel.pairs[0]?.top
   if (!finalMatch) return null
@@ -2750,8 +2887,9 @@ watch(activePool, async () => {
                       </div>
                       <span class="vs-divider">·</span>
                       <div class="score-display">
-                        <span>{{ m.real }}</span>
-                        <small>real</small>
+                        <span>{{ realMainScore(m.real) }}</span>
+                        <small v-if="realPenSuffix(m.real)" class="score-pen-suffix">{{ realPenSuffix(m.real) }}</small>
+                        <small v-else>real</small>
                       </div>
                     </div>
                     <div class="match-team">
@@ -2759,6 +2897,9 @@ watch(activePool, async () => {
                       <strong>{{ displayTeams(m).away }}</strong>
                     </div>
                   </div>
+                  <span v-if="penaltyWinner(m)" class="match-pen-winner">
+                    🥅 Pasa por penaltis: <strong>{{ penaltyWinner(m) }}</strong>
+                  </span>
                   <span v-if="m.stage !== 'GROUP_STAGE' && displayTeams(m).predicted && (m.home === 'Pendiente' || m.away === 'Pendiente')" class="muted" style="font-size:11px">
                     Equipos según tu predicción del cuadro
                   </span>
@@ -2896,58 +3037,64 @@ watch(activePool, async () => {
             <div class="bracket-tab__phase-header">
               <ChevronRight :size="16" />
               <h2>Eliminatorias</h2>
+              <div class="bracket-view-toggle">
+                <button
+                  type="button"
+                  :class="['bracket-view-toggle__btn', { 'bracket-view-toggle__btn--active': bracketViewMode === 'live' }]"
+                  @click="bracketViewMode = 'live'"
+                >LIVE</button>
+                <button
+                  type="button"
+                  :class="['bracket-view-toggle__btn', { 'bracket-view-toggle__btn--active': bracketViewMode === 'initial' }]"
+                  @click="bracketViewMode = 'initial'"
+                >Apuesta inicial</button>
+              </div>
             </div>
             <div class="bracket-tree-wrap">
               <div class="bracket-tree">
 
-                <div v-for="(level, li) in bracketLevels" :key="level.name" class="bracket-col">
+                <div v-for="(level, li) in activeBracketLevels" :key="level.name" class="bracket-col">
                   <p class="bracket-col__label">{{ roundLabel(level.name) }}</p>
                   <div class="bracket-col__body">
                     <div
                       v-for="(pair, pi) in level.pairs"
                       :key="pi"
-                      :class="['bracket-pair', li < bracketLevels.length - 1 && pair.bottom ? 'bracket-pair--active' : '']"
+                      :class="['bracket-pair', li < activeBracketLevels.length - 1 && pair.bottom ? 'bracket-pair--active' : '']"
                     >
                       <!-- top match -->
                       <div class="bracket-slot" :style="{ height: level.slotH + 'px' }">
                         <div
-                          :class="['bracket-mc', { 'bracket-mc--done': pair.top.done, 'bracket-mc--pred': !pair.top.done && pair.top.pred !== '?-?', 'bracket-mc--final': level.name === 'Final', 'bracket-mc--editable': isBracketMatchEditable(pair.top), 'bracket-mc--broken': bracketAlerts.broken.has(pair.top.matchId), 'bracket-mc--dimmed': bracketAlerts.dimmed.has(pair.top.matchId) }]"
-                          @click="openBracketPred(pair.top)"
+                          :class="['bracket-mc', { 'bracket-mc--done': pair.top.done, 'bracket-mc--final': level.name === 'Final', 'bracket-mc--editable': bracketViewMode === 'live' && isBracketMatchEditable(pair.top) }]"
+                          @click="bracketViewMode === 'live' && openBracketPred(pair.top)"
                         >
                           <div :class="['bracket-tm', { 'bracket-tm--win': pair.top.done && pair.top.winner === pair.top.home }]">
                             <span :class="`fi fi-${pair.top.homeFl} flag-xs`"></span>
                             <span class="bracket-tm__name">{{ pair.top.home }}</span>
-                            <strong v-if="pair.top.done" class="bracket-tm__score">{{ pair.top.real.split('-')[0] }}</strong>
-                            <span v-else-if="pair.top.pred !== '?-?'" class="bracket-tm__pred">{{ pair.top.pred.split('-')[0] }}</span>
+                            <strong v-if="pair.top.done && bracketTeamsKnown(pair.top)" class="bracket-tm__score">{{ realGoalPart(pair.top.real, 0) }}</strong>
                           </div>
                           <div :class="['bracket-tm', { 'bracket-tm--win': pair.top.done && pair.top.winner === pair.top.away }]">
                             <span :class="`fi fi-${pair.top.awayFl} flag-xs`"></span>
                             <span class="bracket-tm__name">{{ pair.top.away }}</span>
-                            <strong v-if="pair.top.done" class="bracket-tm__score">{{ pair.top.real.split('-')[1] }}</strong>
-                            <span v-else-if="pair.top.pred !== '?-?'" class="bracket-tm__pred">{{ pair.top.pred.split('-')[1] }}</span>
+                            <strong v-if="pair.top.done && bracketTeamsKnown(pair.top)" class="bracket-tm__score">{{ realGoalPart(pair.top.real, 1) }}</strong>
                           </div>
-                          <span v-if="bracketAlerts.broken.has(pair.top.matchId)" class="bracket-mc__broken-icon" title="Predicción inválida: los equipos han cambiado">⚠️</span>
                         </div>
                       </div>
                       <!-- bottom match -->
                       <div v-if="pair.bottom" class="bracket-slot" :style="{ height: level.slotH + 'px' }">
                         <div
-                          :class="['bracket-mc', { 'bracket-mc--done': pair.bottom.done, 'bracket-mc--pred': !pair.bottom.done && pair.bottom.pred !== '?-?', 'bracket-mc--final': level.name === 'Final', 'bracket-mc--editable': isBracketMatchEditable(pair.bottom), 'bracket-mc--broken': bracketAlerts.broken.has(pair.bottom.matchId), 'bracket-mc--dimmed': bracketAlerts.dimmed.has(pair.bottom.matchId) }]"
-                          @click="openBracketPred(pair.bottom)"
+                          :class="['bracket-mc', { 'bracket-mc--done': pair.bottom.done, 'bracket-mc--final': level.name === 'Final', 'bracket-mc--editable': bracketViewMode === 'live' && isBracketMatchEditable(pair.bottom) }]"
+                          @click="bracketViewMode === 'live' && openBracketPred(pair.bottom)"
                         >
                           <div :class="['bracket-tm', { 'bracket-tm--win': pair.bottom.done && pair.bottom.winner === pair.bottom.home }]">
                             <span :class="`fi fi-${pair.bottom.homeFl} flag-xs`"></span>
                             <span class="bracket-tm__name">{{ pair.bottom.home }}</span>
-                            <strong v-if="pair.bottom.done" class="bracket-tm__score">{{ pair.bottom.real.split('-')[0] }}</strong>
-                            <span v-else-if="pair.bottom.pred !== '?-?'" class="bracket-tm__pred">{{ pair.bottom.pred.split('-')[0] }}</span>
+                            <strong v-if="pair.bottom.done && bracketTeamsKnown(pair.bottom)" class="bracket-tm__score">{{ realGoalPart(pair.bottom.real, 0) }}</strong>
                           </div>
                           <div :class="['bracket-tm', { 'bracket-tm--win': pair.bottom.done && pair.bottom.winner === pair.bottom.away }]">
                             <span :class="`fi fi-${pair.bottom.awayFl} flag-xs`"></span>
                             <span class="bracket-tm__name">{{ pair.bottom.away }}</span>
-                            <strong v-if="pair.bottom.done" class="bracket-tm__score">{{ pair.bottom.real.split('-')[1] }}</strong>
-                            <span v-else-if="pair.bottom.pred !== '?-?'" class="bracket-tm__pred">{{ pair.bottom.pred.split('-')[1] }}</span>
+                            <strong v-if="pair.bottom.done && bracketTeamsKnown(pair.bottom)" class="bracket-tm__score">{{ realGoalPart(pair.bottom.real, 1) }}</strong>
                           </div>
-                          <span v-if="bracketAlerts.broken.has(pair.bottom.matchId)" class="bracket-mc__broken-icon" title="Predicción inválida: los equipos han cambiado">⚠️</span>
                         </div>
                       </div>
                     </div>
@@ -2959,9 +3106,18 @@ watch(activePool, async () => {
                   <p class="bracket-col__label">Campeón</p>
                   <div
                     class="bracket-slot bracket-slot--trophy"
-                    :style="{ height: (bracketLevels[bracketLevels.length - 1]?.slotH ?? 54) + 'px' }"
+                    :style="{ height: (activeBracketLevels[activeBracketLevels.length - 1]?.slotH ?? 54) + 'px' }"
                   >
-                    <div :class="['bracket-trophy-card', { 'bracket-trophy-card--pred': !champion && (predFinalWinner?.name && predFinalWinner.name !== '?' && predFinalWinner.name !== 'Pendiente' || championPick?.hasChampionPick) }]">
+                    <div v-if="bracketViewMode === 'initial'" :class="['bracket-trophy-card', { 'bracket-trophy-card--pred': initialFinalWinner?.name && initialFinalWinner.name !== '?' && initialFinalWinner.name !== 'Pendiente' }]">
+                      <Crown :size="22" style="color:var(--gold)" />
+                      <template v-if="initialFinalWinner && initialFinalWinner.name !== '?' && initialFinalWinner.name !== 'Pendiente'">
+                        <span :class="`fi fi-${initialFinalWinner.flag} flag-sm`"></span>
+                        <strong>{{ initialFinalWinner.name }}</strong>
+                        <span class="bracket-trophy-pred-badge">pred.</span>
+                      </template>
+                      <span v-else class="bracket-trophy-tbd">Por decidir</span>
+                    </div>
+                    <div v-else :class="['bracket-trophy-card', { 'bracket-trophy-card--pred': !champion && (predFinalWinner?.name && predFinalWinner.name !== '?' && predFinalWinner.name !== 'Pendiente' || championPick?.hasChampionPick) }]">
                       <Crown :size="22" style="color:var(--gold)" />
                       <template v-if="champion">
                         <span :class="`fi fi-${champion.flag} flag-sm`"></span>

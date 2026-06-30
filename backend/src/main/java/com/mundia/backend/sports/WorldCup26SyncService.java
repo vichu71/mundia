@@ -79,12 +79,13 @@ public class WorldCup26SyncService {
             // ensure teams are loaded first so we can resolve team IDs
             String teamsRaw = client.getTeams();
             Map<String, Long> teamIdByWc26Id = buildTeamIdMap(teamsRaw);
+            Long pendienteTeamId = pendienteTeamId();
 
             String gamesRaw = client.getGames();
             JsonNode root = mapper.readTree(gamesRaw);
             int count = 0;
             for (JsonNode g : root.path("games")) {
-                if (upsertGame(g, teamIdByWc26Id)) {
+                if (upsertGame(g, teamIdByWc26Id, pendienteTeamId)) {
                     count++;
                 }
             }
@@ -142,7 +143,15 @@ public class WorldCup26SyncService {
         return map;
     }
 
-    private boolean upsertGame(JsonNode g, Map<String, Long> teamIdByWc26Id) {
+    /** Id del equipo placeholder 'Pendiente' (canónico desde V15), usado para
+     *  rellenar parcialmente cruces de eliminatoria con un solo lado decidido. */
+    private Long pendienteTeamId() {
+        List<Long> ids = jdbc.query(
+                "SELECT id FROM teams WHERE name = 'Pendiente' LIMIT 1", (rs, i) -> rs.getLong("id"));
+        return ids.isEmpty() ? null : ids.get(0);
+    }
+
+    private boolean upsertGame(JsonNode g, Map<String, Long> teamIdByWc26Id, Long pendienteTeamId) {
         String wc26GameId    = g.path("id").asText();
         String homeWc26Id    = g.path("home_team_id").asText();
         String awayWc26Id    = g.path("away_team_id").asText();
@@ -153,12 +162,31 @@ public class WorldCup26SyncService {
         String type          = g.path("type").asText("group");  // group / knockout
         String group         = g.path("group").asText(null);
         String localDate     = g.path("local_date").asText(null);
-        String homeNameEn    = g.path("home_team_name_en").asText("Unknown");
-        String awayNameEn    = g.path("away_team_name_en").asText("Unknown");
+        Integer homePenalty  = parsePenalty(g.path("home_penalty_score"));
+        Integer awayPenalty  = parsePenalty(g.path("away_penalty_score"));
 
         Long homeTeamId = teamIdByWc26Id.get(homeWc26Id);
         Long awayTeamId = teamIdByWc26Id.get(awayWc26Id);
-        if (homeTeamId == null || awayTeamId == null) {
+        boolean knockout = !"group".equalsIgnoreCase(type);
+
+        if (knockout) {
+            // En eliminatorias la API da "Winner Match N" hasta que se conoce el
+            // rival real (team_id sin resolver). Si solo UN lado está decidido
+            // (el otro cruce de R32/R16 aún no ha terminado), igualmente
+            // propagamos el equipo conocido y dejamos 'Pendiente' en el otro —
+            // así el cuadro LIVE muestra "Alemania vs Pendiente" en vez de
+            // ocultar el partido entero hasta que ambos lados estén decididos.
+            if (homeTeamId == null && awayTeamId == null) {
+                log.debug("wc26 KO game {} has both teams unresolved, skipping", wc26GameId);
+                return false;
+            }
+            if ((homeTeamId == null || awayTeamId == null) && pendienteTeamId == null) {
+                log.debug("wc26 KO game {} has one unresolved team but no 'Pendiente' team in DB", wc26GameId);
+                return false;
+            }
+            if (homeTeamId == null) homeTeamId = pendienteTeamId;
+            if (awayTeamId == null) awayTeamId = pendienteTeamId;
+        } else if (homeTeamId == null || awayTeamId == null) {
             log.debug("wc26 game {} has unresolved teams home={} away={}", wc26GameId, homeWc26Id, awayWc26Id);
             return false;
         }
@@ -183,10 +211,9 @@ public class WorldCup26SyncService {
         // use negative wc26 game id as external_fixture_id (avoids collision)
         long extFixtureId = -(Long.parseLong(wc26GameId));
 
-        boolean knockout = !"group".equalsIgnoreCase(type);
         if (knockout) {
             upsertKnockoutGame(extFixtureId, roundId, homeTeamId, awayTeamId,
-                    kickoff, status, statusShort, elapsed, homeGoals, awayGoals);
+                    kickoff, status, statusShort, elapsed, homeGoals, awayGoals, homePenalty, awayPenalty);
             return true;
         }
 
@@ -217,16 +244,19 @@ public class WorldCup26SyncService {
      */
     private void upsertKnockoutGame(long extFixtureId, long roundId, long homeTeamId, long awayTeamId,
                                     java.sql.Timestamp kickoff, String status, String statusShort,
-                                    Integer elapsed, Integer homeGoals, Integer awayGoals) {
+                                    Integer elapsed, Integer homeGoals, Integer awayGoals,
+                                    Integer homePenalty, Integer awayPenalty) {
         int updated = jdbc.update("""
                 UPDATE matches
                 SET round_id = ?, home_team_id = ?, away_team_id = ?, kickoff_at = ?,
                     status = ?, status_short = ?, elapsed = ?, home_goals = ?, away_goals = ?,
+                    home_penalty_score = ?, away_penalty_score = ?,
                     result_source = 'WC26_IR', last_synced_at = CURRENT_TIMESTAMP(6)
                 WHERE external_fixture_id = ?
                 """,
                 roundId, homeTeamId, awayTeamId, kickoff,
-                status, statusShort, elapsed, homeGoals, awayGoals, extFixtureId);
+                status, statusShort, elapsed, homeGoals, awayGoals,
+                homePenalty, awayPenalty, extFixtureId);
         if (updated > 0) return;
 
         List<Long> freeSlot = jdbc.query("""
@@ -240,11 +270,13 @@ public class WorldCup26SyncService {
                     UPDATE matches
                     SET external_fixture_id = ?, home_team_id = ?, away_team_id = ?, kickoff_at = ?,
                         status = ?, status_short = ?, elapsed = ?, home_goals = ?, away_goals = ?,
+                        home_penalty_score = ?, away_penalty_score = ?,
                         result_source = 'WC26_IR', last_synced_at = CURRENT_TIMESTAMP(6)
                     WHERE id = ?
                     """,
                     extFixtureId, homeTeamId, awayTeamId, kickoff,
-                    status, statusShort, elapsed, homeGoals, awayGoals, freeSlot.get(0));
+                    status, statusShort, elapsed, homeGoals, awayGoals,
+                    homePenalty, awayPenalty, freeSlot.get(0));
             return;
         }
 
@@ -252,11 +284,13 @@ public class WorldCup26SyncService {
                 INSERT INTO matches
                   (external_fixture_id, round_id, home_team_id, away_team_id,
                    kickoff_at, status, status_short, elapsed, home_goals, away_goals,
+                   home_penalty_score, away_penalty_score,
                    result_source, last_synced_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'WC26_IR', CURRENT_TIMESTAMP(6))
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'WC26_IR', CURRENT_TIMESTAMP(6))
                 """,
                 extFixtureId, roundId, homeTeamId, awayTeamId,
-                kickoff, status, statusShort, elapsed, homeGoals, awayGoals);
+                kickoff, status, statusShort, elapsed, homeGoals, awayGoals,
+                homePenalty, awayPenalty);
     }
 
     private String resolveRoundName(String type, String group) {
@@ -316,6 +350,14 @@ public class WorldCup26SyncService {
     private Integer parseGoals(String val) {
         try { return Integer.parseInt(val.trim()); }
         catch (NumberFormatException e) { return 0; }
+    }
+
+    private Integer parsePenalty(JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) return null;
+        String val = node.asText("");
+        if (val.isBlank()) return null;
+        try { return Integer.parseInt(val.trim()); }
+        catch (NumberFormatException e) { return null; }
     }
 
     private java.sql.Timestamp parseKickoff(String localDate) {

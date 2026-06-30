@@ -33,6 +33,7 @@ public record DashboardResponse(
             String homeFl,
             String awayFl,
             String pred,
+            String initialPred,
             String real,
             Integer points,
             String scoreType,
@@ -93,9 +94,11 @@ public record DashboardResponse(
             String away,
             String awayFl,
             String pred,
+            String initialPred,
             String real,
             String winner,
-            boolean done
+            boolean done,
+            Long extId
     ) {
     }
 

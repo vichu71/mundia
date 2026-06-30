@@ -520,6 +520,17 @@ public class SimulatorService {
         String advancerExpr = thirdPlace
                 ? "CASE WHEN m.home_goals >= m.away_goals THEN m.away_team_id ELSE m.home_team_id END"
                 : "CASE WHEN m.home_goals >= m.away_goals THEN m.home_team_id ELSE m.away_team_id END";
+        // IMPORTANTE: hay que exigir la ronda COMPLETA, no solo "algún partido jugado".
+        // Si se llama con la ronda a medias (p.ej. tras "Avanzar día" sin terminarla),
+        // el filtro de abajo descarta los partidos sin jugar y la lista de clasificados
+        // queda más corta de lo esperado — cada índice se desplaza una posición y los
+        // cruces de la siguiente ronda salen mal emparejados.
+        Integer totalSlots = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM matches m
+                JOIN rounds r ON r.id = m.round_id
+                WHERE r.name = ? AND m.result_source = 'SIM'
+                """, Integer.class, currentRound);
+
         List<Long> advancers = jdbc.query("""
                 SELECT %s advancer_id
                 FROM matches m
@@ -529,9 +540,9 @@ public class SimulatorService {
                 ORDER BY m.kickoff_at, m.id
                 """.formatted(advancerExpr), (rs, i) -> rs.getLong("advancer_id"), currentRound);
 
-        if (advancers.isEmpty()) {
+        if (totalSlots == null || totalSlots == 0 || advancers.size() < totalSlots) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
-                    "Ronda " + currentRound + " no completada");
+                    "Ronda " + currentRound + " no completada (" + advancers.size() + "/" + totalSlots + ")");
         }
 
         long roundId = upsertSimRound(nextRound, "KNOCKOUT", sortOrder);
