@@ -9,6 +9,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.util.*;
 import java.util.List;
 import java.util.Random;
 
@@ -455,17 +456,17 @@ public class SimulatorService {
     @Transactional
     public KnockoutGenResult generateRoundOf32(long poolId) {
         // Compute top 2 from each group + 8 best 3rds
-        List<Long> classified = computeClassified();
-        if (classified.size() < 32) {
+        Map<String, List<Long>> byGroup = computeClassifiedByGroup();
+        List<Long> thirds = byGroup.remove("THIRDS");
+
+        if (byGroup.size() < 12 || thirds == null || thirds.size() < 8) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                 "Fase de grupos no completada. Partidos pendientes de resultado.");
         }
 
-        // Official WC2026 Round of 32 pairing: 1A vs 2B, 1B vs 2A... (simplified sequential)
         String roundName = "Round of 32";
         long roundId = upsertSimRound(roundName, "KNOCKOUT", 10);
 
-        // Dates: July 1-4, 2026 (approximate)
         String[] dates = {
             "2026-07-01 18:00:00", "2026-07-01 21:00:00", "2026-07-02 18:00:00", "2026-07-02 21:00:00",
             "2026-07-03 18:00:00", "2026-07-03 21:00:00", "2026-07-04 18:00:00", "2026-07-04 21:00:00",
@@ -473,11 +474,37 @@ public class SimulatorService {
             "2026-07-07 18:00:00", "2026-07-07 21:00:00", "2026-07-08 18:00:00", "2026-07-08 21:00:00",
         };
 
+        // WC2026 official R32 fixture: groups paired in specific combinations
+        String[][] pairings = {
+            {"A", "B"}, {"C", "D"}, {"E", "F"}, {"G", "H"},
+            {"I", "J"}, {"K", "L"},
+            {"B", "A"}, {"D", "C"}, {"F", "E"}, {"H", "G"},
+            {"J", "I"}, {"L", "K"}
+        };
+
         int created = 0;
-        for (int i = 0; i < 16; i++) {
-            long homeId = classified.get(i * 2);
-            long awayId = classified.get(i * 2 + 1);
+        for (int i = 0; i < pairings.length; i++) {
+            String gHome = "Group " + pairings[i][0];
+            String gAway = "Group " + pairings[i][1];
+
+            Long homeId = byGroup.get(gHome) != null ? byGroup.get(gHome).get(0) : null;
+            Long awayId = byGroup.get(gAway) != null ? byGroup.get(gAway).get(1) : null;
+
+            if (homeId == null || awayId == null) continue;
+
             long matchId = fillKnockoutSlot(roundId, i, homeId, awayId, dates[i]);
+            generateSimPredictions(matchId, poolId);
+            created++;
+        }
+
+        // R32 slots 12-15: best 8 third-place teams
+        for (int i = 0; i < 4; i++) {
+            Long homeId = i * 2 < thirds.size() ? thirds.get(i * 2) : null;
+            Long awayId = i * 2 + 1 < thirds.size() ? thirds.get(i * 2 + 1) : null;
+
+            if (homeId == null || awayId == null) continue;
+
+            long matchId = fillKnockoutSlot(roundId, 12 + i, homeId, awayId, dates[12 + i]);
             generateSimPredictions(matchId, poolId);
             created++;
         }
@@ -616,6 +643,48 @@ public class SimulatorService {
         List<Long> all = new java.util.ArrayList<>(top2);
         all.addAll(thirds);
         return all;
+    }
+
+    private Map<String, List<Long>> computeClassifiedByGroup() {
+        String standingsQuery = """
+                SELECT team_id, round_name,
+                       SUM(pts) pts, SUM(gd) gd, SUM(gf) gf,
+                       ROW_NUMBER() OVER (PARTITION BY round_name ORDER BY SUM(pts) DESC, SUM(gd) DESC, SUM(gf) DESC) rn
+                FROM (
+                  SELECT ht.id team_id, r.name round_name,
+                    CASE WHEN m.home_goals > m.away_goals THEN 3 WHEN m.home_goals = m.away_goals THEN 1 ELSE 0 END pts,
+                    (m.home_goals - m.away_goals) gd, m.home_goals gf
+                  FROM matches m JOIN rounds r ON r.id = m.round_id AND r.stage = 'GROUP_STAGE'
+                  JOIN teams ht ON ht.id = m.home_team_id
+                  WHERE m.home_goals IS NOT NULL AND m.result_source IN ('WC26_IR','SIM')
+                  UNION ALL
+                  SELECT at.id, r.name,
+                    CASE WHEN m.away_goals > m.home_goals THEN 3 WHEN m.home_goals = m.away_goals THEN 1 ELSE 0 END,
+                    (m.away_goals - m.home_goals), m.away_goals
+                  FROM matches m JOIN rounds r ON r.id = m.round_id AND r.stage = 'GROUP_STAGE'
+                  JOIN teams at ON at.id = m.away_team_id
+                  WHERE m.home_goals IS NOT NULL AND m.result_source IN ('WC26_IR','SIM')
+                ) t GROUP BY team_id, round_name
+                """;
+
+        Map<String, List<Long>> result = new HashMap<>();
+
+        // Top 2 from each group (keep as "Group A", "Group B", etc.)
+        List<Map<String, Object>> top2Rows = jdbc.queryForList(
+                "SELECT team_id, round_name FROM (" + standingsQuery + ") ranked WHERE rn <= 2 ORDER BY round_name, rn");
+        for (Map<String, Object> row : top2Rows) {
+            String roundName = (String) row.get("round_name");
+            Long teamId = ((Number) row.get("team_id")).longValue();
+            result.computeIfAbsent(roundName, k -> new ArrayList<>()).add(teamId);
+        }
+
+        // Best 8 third-place teams
+        List<Long> thirds = jdbc.query(
+                "SELECT team_id FROM (" + standingsQuery + ") ranked WHERE rn = 3 ORDER BY pts DESC, gd DESC, gf DESC LIMIT 8",
+                (rs, i) -> rs.getLong("team_id"));
+        result.put("THIRDS", thirds);
+
+        return result;
     }
 
     private static int randomGoals() {
