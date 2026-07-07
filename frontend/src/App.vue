@@ -388,6 +388,7 @@ async function createPool() {
 // ──────────────────────────────────────────
 const activeTab   = ref<TabId>('home')
 const bracketViewMode = ref<'live' | 'initial'>('live')
+const bracketGroupsExpanded = ref(false)
 const activePool  = ref<number | null>(null)
 const showHelp    = ref(false)
 const HELP_SEEN_KEY = 'mundia-help-seen'
@@ -3007,11 +3008,11 @@ watch(activePool, async () => {
 
           <!-- Fase de grupos -->
           <div v-if="bracketRounds.filter(r => r.name.startsWith('Group')).length" class="bracket-tab__section">
-            <div class="bracket-tab__phase-header">
-              <span class="fi fi-un flag-xs"></span>
+            <div class="bracket-tab__phase-header bracket-tab__phase-header--clickable" @click="bracketGroupsExpanded = !bracketGroupsExpanded">
+              <ChevronRight :size="16" :class="['bracket-phase-chevron', { 'bracket-phase-chevron--open': bracketGroupsExpanded }]" />
               <h2>Fase de Grupos</h2>
             </div>
-            <div class="bracket-groups-grid">
+            <div v-if="bracketGroupsExpanded" class="bracket-groups-grid">
               <div
                 v-for="round in bracketRounds.filter(r => r.name.startsWith('Group'))"
                 :key="round.name"

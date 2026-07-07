@@ -2487,6 +2487,10 @@ h3 { font-size: 0.88rem; font-weight: 700; color: var(--text); }
 
 .bracket-tab__phase-header svg { color: var(--blue); }
 .bracket-tab__phase-header h2 { font-size: 1rem; }
+.bracket-tab__phase-header--clickable { cursor: pointer; user-select: none; }
+.bracket-tab__phase-header--clickable:hover h2 { color: var(--blue); }
+.bracket-phase-chevron { transition: transform 0.2s ease; color: var(--muted) !important; }
+.bracket-phase-chevron--open { transform: rotate(90deg); }
 
 .bracket-view-toggle {
   display: flex;
