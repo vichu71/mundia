@@ -1157,10 +1157,12 @@ const groupStandings = ref<GroupStanding[]>([])
 const initialBetStatus = ref<{ submitted: boolean; serverGroupsTotal: number } | null>(null)
 
 async function loadInitialBetStatus() {
-  if (!activePoolId.value) return
-  const res = await fetchWithAuth(`${API_BASE_URL}/predictions/initial/status/${activePoolId.value}`)
+  const requestedPoolId = activePoolId.value
+  if (!requestedPoolId) return
+  const res = await fetchWithAuth(`${API_BASE_URL}/predictions/initial/status/${requestedPoolId}`)
   if (res.ok) {
     const data = await res.json()
+    if (activePoolId.value !== requestedPoolId) return
     initialBetStatus.value = {
       submitted: !!data.submitted,
       serverGroupsTotal: data.groupsTotal ?? 0,
@@ -1314,9 +1316,14 @@ const filteredTeams = computed(() => {
 })
 
 async function loadChampionStatus() {
-  if (!activePoolId.value) return
-  const res = await fetchWithAuth(`${API_BASE_URL}/predictions/champion/status/${activePoolId.value}`)
-  if (res.ok) championPick.value = await res.json()
+  const requestedPoolId = activePoolId.value
+  if (!requestedPoolId) return
+  const res = await fetchWithAuth(`${API_BASE_URL}/predictions/champion/status/${requestedPoolId}`)
+  if (res.ok) {
+    const data = await res.json()
+    if (activePoolId.value !== requestedPoolId) return
+    championPick.value = data
+  }
 }
 
 async function loadAllTeams() {
@@ -1988,10 +1995,14 @@ function triggerSyncAnimation(jobKey: string) {
 }
 
 async function loadDashboard() {
-  if (!activePoolId.value) return
-  const res = await fetchWithAuth(`${API_BASE_URL}/dashboard/${activePoolId.value}`)
+  const requestedPoolId = activePoolId.value
+  if (!requestedPoolId) return
+  const res = await fetchWithAuth(`${API_BASE_URL}/dashboard/${requestedPoolId}`)
   if (!res.ok) throw new Error(`Dashboard failed: ${res.status}`)
   const data = await res.json()
+  // Descartar respuestas fuera de orden: si el usuario cambió de porra mientras
+  // esta petición estaba en vuelo (polling, etc.), no pisar los datos de la porra actual.
+  if (activePoolId.value !== requestedPoolId) return
   pools.value = data.pools
   matches.value = data.matches
   ranking.value = data.ranking
